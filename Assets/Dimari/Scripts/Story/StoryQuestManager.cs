@@ -1,0 +1,1501 @@
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+using Dimari.Core;
+using Dimari.Player;
+using Dimari.Atmosphere;
+using Dimari.Cinematics;
+
+namespace Dimari.Story
+{
+    /// <summary>
+    /// Управляет:
+    /// 1. Списком текущих задач в левом верхнем углу экрана («Текущие задачи:»):
+    ///    1. Найти рюкзак.
+    ///    2. Найти планшет.
+    ///    3. Дойти до точки перехода во 2-ю главу: «Городок Димарика, Рогово».
+    /// 2. Субтитрами в нижней части экрана (включая стартовый монолог пробуждения и осмотр предметов).
+    /// 3. Главным меню и меню паузы в стиле Dying Light: The Beast (живой лес на фоне, персонаж стоит справа).
+    /// 4. Автоматической подстановкой 3D-модели рюкзака из ассета «Bags - Props for Interior» (Mixall) с конвертацией материалов под URP.
+    /// </summary>
+    public class StoryQuestManager : MonoBehaviour
+    {
+        public static StoryQuestManager Instance { get; private set; }
+
+        [Serializable]
+        public class QuestStep
+        {
+            public string id;
+            public string title;
+            public bool isCompleted;
+        }
+
+        [Header("Текущие задачи (верхний левый угол)")]
+        public string questHeader = "Текущие задачи:";
+        public List<QuestStep> questSteps = new List<QuestStep>();
+
+        public bool IsMenuOpen => _isMenuOpen;
+        public bool HasGameStarted => _hasGameStarted;
+
+        private string _currentSubtitle = "";
+        private float _subtitleTimer = 0f;
+        private float _subtitleAlpha = 0f;
+
+        private string _interactionPrompt = "";
+        private bool _showHUD = false;
+        private bool _isMenuOpen = true;
+        private bool _isSettingsOpen = false;
+        private bool _hasGameStarted = false;
+        private bool _isChapter2Reached = false;
+
+        private string _statusToast = "";
+        private float _statusToastTimer = 0f;
+        private int _selectedMenuIndex = 0;
+
+        private float _menuCamOrbitTimer = 0f;
+
+        // Текстуры для UI
+        [NonSerialized] private Texture2D _darkPanelTex;
+        [NonSerialized] private Texture2D _subtitlePanelTex;
+        [NonSerialized] private Texture2D _menuLeftGradientTex;
+        [NonSerialized] private Texture2D _buttonHoverBarTex;
+        [NonSerialized] private Texture2D _accentBarTex;
+        [NonSerialized] private Texture2D _goldAccentTex;
+        [NonSerialized] private Texture2D _logoBoxTex;
+        [NonSerialized] private Texture2D _keyCapTex;
+
+        // ВАЖНО: [NonSerialized], чтобы Unity не создавала пустые дефолтные GUIStyle (чёрный мелкий шрифт 12px)!
+        [NonSerialized] private bool _stylesInitialized = false;
+        [NonSerialized] private GUIStyle _logoMainStyle;
+        [NonSerialized] private GUIStyle _menuBtnStyle;
+        [NonSerialized] private GUIStyle _menuBtnHoverStyle;
+        [NonSerialized] private GUIStyle _questHeaderStyle;
+        [NonSerialized] private GUIStyle _questActiveStyle;
+        [NonSerialized] private GUIStyle _questDoneStyle;
+        [NonSerialized] private GUIStyle _subtitleSpeakerStyle;
+        [NonSerialized] private GUIStyle _subtitleStyle;
+        [NonSerialized] private GUIStyle _promptStyle;
+        [NonSerialized] private GUIStyle _bottomBarTextStyle;
+        [NonSerialized] private GUIStyle _keyCapStyle;
+        [NonSerialized] private GUIStyle _settingsLabelStyle;
+        [NonSerialized] private GUIStyle _chapter2TitleStyle;
+
+        private ForestPlayerController _player;
+        private ForestCameraController _cameraController;
+        private ForestAwakeningDirector _director;
+        private Camera _mainCam;
+
+        private void Awake()
+        {
+            Instance = this;
+            SetupDimariQuests();
+        }
+
+        private void Start()
+        {
+            _player = FindAnyObjectByType<ForestPlayerController>();
+            _cameraController = FindAnyObjectByType<ForestCameraController>();
+            _director = FindAnyObjectByType<ForestAwakeningDirector>();
+            _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+
+            // Принудительно обновляем список задач
+            SetupDimariQuests();
+
+            // Убираем пень на подставке и спавним рюкзак из Bags - Props for Interior, планшет и указатель на Рогово
+            RemoveStumpAndSpawnUpdatedStoryProps();
+
+            // Открываем главное меню при запуске
+            OpenMainMenuOnStartup();
+        }
+
+        private void SetupDimariQuests()
+        {
+            questHeader = "Текущие задачи:";
+            questSteps.Clear();
+            questSteps.Add(new QuestStep
+            {
+                id = "find_backpack",
+                title = "1. Найти рюкзак.",
+                isCompleted = false
+            });
+            questSteps.Add(new QuestStep
+            {
+                id = "find_tablet",
+                title = "2. Найти планшет.",
+                isCompleted = false
+            });
+            questSteps.Add(new QuestStep
+            {
+                id = "rogovo_exit",
+                title = "3. Дойти до точки перехода во 2-ю главу: «Городок Димарика, Рогово».",
+                isCompleted = false
+            });
+        }
+
+        /// <summary>
+        /// Удаляет старый пень на круглой подставке и создаёт 3 сюжетных объекта:
+        /// 1) 3D-рюкзак из пакета «Bags - Props for Interior» (Mixall) или детализированный 3D-рюкзак,
+        /// 2) Планшет с треснутым светящимся экраном и картой,
+        /// 3) Дорожный указатель перехода во 2-ю главу «Городок Димарика, Рогово».
+        /// </summary>
+        private void RemoveStumpAndSpawnUpdatedStoryProps()
+        {
+            // 1. Удаляем старый контейнер Dimari_StoryObjects (в котором был пень на круглой подставке)
+            GameObject oldStoryRoot = GameObject.Find("Dimari_StoryObjects");
+            if (oldStoryRoot != null)
+            {
+                DestroyImmediate(oldStoryRoot);
+            }
+
+            // 2. Дополнительно проверяем сцену на наличие любых объектов-пней на подставке (showcase / turntable stump)
+            GameObject[] allObjects = FindObjectsByType<GameObject>();
+            foreach (GameObject go in allObjects)
+            {
+                if (go == null) continue;
+                string n = go.name.ToLowerInvariant();
+                if (n.Contains("storyprop_ancientstone") || n.Contains("pedestal") || n.Contains("turntable") || n.Contains("showcase_stump"))
+                {
+                    go.SetActive(false);
+                }
+            }
+
+            if (_player == null)
+            {
+                _player = FindAnyObjectByType<ForestPlayerController>();
+            }
+
+            Vector3 pPos = _player != null ? _player.transform.position : Vector3.zero;
+            Vector3 forward = _player != null ? _player.transform.forward : Vector3.forward;
+            Vector3 right = _player != null ? _player.transform.right : Vector3.right;
+            forward.y = 0f;
+            if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
+            forward.Normalize();
+            right = Vector3.Cross(Vector3.up, forward).normalized;
+
+            GameObject storyRoot = new GameObject("Dimari_StoryObjects_V2");
+
+            // =========================================================================
+            // 1. РЮКЗАК (Задача 1: Найти рюкзак)
+            // Ищем импортированный ассет «Bags - Props for Interior» (Mixall) или строим 3D-рюкзак
+            // =========================================================================
+            Vector3 backpackPos = GetGroundPoint(pPos + forward * 4.5f + right * 1.4f, pPos.y);
+            GameObject backpackObj = new GameObject("Quest1_Backpack");
+            backpackObj.transform.SetParent(storyRoot.transform);
+            backpackObj.transform.position = backpackPos;
+            backpackObj.transform.rotation = Quaternion.Euler(0f, 32f, 0f);
+
+            bool spawnedAssetBag = TrySpawnMixallBagPrefab(backpackObj.transform);
+            if (!spawnedAssetBag)
+            {
+                CreateDetailedProceduralBackpack(backpackObj.transform);
+            }
+
+            // Небольшой коллайдер на корневом объекте, чтобы луч камеры и триггер взаимодействия всегда ловили рюкзак
+            BoxCollider bagTriggerCol = backpackObj.AddComponent<BoxCollider>();
+            bagTriggerCol.center = new Vector3(0f, 0.25f, 0f);
+            bagTriggerCol.size = new Vector3(0.65f, 0.55f, 0.55f);
+
+            InteractableStoryObject bagInteract = backpackObj.AddComponent<InteractableStoryObject>();
+            bagInteract.questStepId = "find_backpack";
+            bagInteract.objectTitle = "Потерянный рюкзак";
+            bagInteract.inspectMonologue = "«Отлично, мой рюкзак! Внутри ключи и фляжка, но планшета тут нет — должно быть, он вылетел в траву чуть дальше по тропе.»";
+
+            // =========================================================================
+            // 2. ПЛАНШЕТ (Задача 2: Найти планшет)
+            // =========================================================================
+            Vector3 tabletPos = GetGroundPoint(pPos + forward * 9.5f - right * 2.1f, pPos.y);
+            GameObject tabletObj = new GameObject("Quest2_Tablet");
+            tabletObj.transform.SetParent(storyRoot.transform);
+            tabletObj.transform.position = tabletPos;
+            tabletObj.transform.rotation = Quaternion.Euler(0f, -24f, 0f);
+
+            CreateDetailedTabletModel(tabletObj.transform);
+
+            BoxCollider tabCol = tabletObj.AddComponent<BoxCollider>();
+            tabCol.center = new Vector3(0f, 0.12f, 0f);
+            tabCol.size = new Vector3(0.55f, 0.35f, 0.45f);
+
+            InteractableStoryObject tabletInteract = tabletObj.AddComponent<InteractableStoryObject>();
+            tabletInteract.questStepId = "find_tablet";
+            tabletInteract.objectTitle = "Разбитый планшет с картой";
+            tabletInteract.inspectMonologue = "«А вот и планшет! Экран треснул, но карта работает. Тропа впереди ведёт прямо в городок Димарика — Рогово. Пора выдвигаться.»";
+
+            // =========================================================================
+            // 3. ТОЧКА ПЕРЕХОДА ВО 2-Ю ГЛАВУ: «Городок Димарика, Рогово»
+            // =========================================================================
+            Vector3 rogovoPos = GetGroundPoint(pPos + forward * 16.0f, pPos.y);
+            GameObject rogovoObj = new GameObject("Quest3_RogovoTransition");
+            rogovoObj.transform.SetParent(storyRoot.transform);
+            rogovoObj.transform.position = rogovoPos;
+
+            CreateDetailedRogovoSignpost(rogovoObj.transform);
+
+            InteractableStoryObject rogovoInteract = rogovoObj.AddComponent<InteractableStoryObject>();
+            rogovoInteract.questStepId = "rogovo_exit";
+            rogovoInteract.objectTitle = "Дорожный указатель: «Городок Димарика, Рогово» (Глава 2)";
+            rogovoInteract.inspectMonologue = "«Впереди уже виднеются крыши Рогово. Держись, Димарик, я скоро разберусь, что вчера произошло.»";
+            rogovoInteract.interactionDistance = 3.2f;
+        }
+
+        /// <summary>
+        /// Автоматически находит префаб или FBX рюкзака из скачанного ассета «Bags - Props for Interior» (Mixall),
+        /// спавнит его на траве и конвертирует его материалы из Standard (Unity 2018) в Universal Render Pipeline/Lit!
+        /// </summary>
+        private bool TrySpawnMixallBagPrefab(Transform parent)
+        {
+#if UNITY_EDITOR
+            string[] searchFilters = new string[]
+            {
+                "t:Prefab",
+                "t:Model"
+            };
+
+            GameObject chosenBagAsset = null;
+            string chosenPath = null;
+            int bestScore = -1;
+
+            foreach (string filter in searchFilters)
+            {
+                string[] guids = UnityEditor.AssetDatabase.FindAssets(filter);
+                foreach (string guid in guids)
+                {
+                    string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(path)) continue;
+
+                    string lowerPath = path.ToLowerInvariant();
+
+                    // Игнорируем системные папки, деревья, персонажа и наши собственные скрипты
+                    if (lowerPath.Contains("toby") ||
+                        lowerPath.Contains("starterassets") ||
+                        lowerPath.Contains("character controller") ||
+                        lowerPath.Contains("human basic") ||
+                        lowerPath.Contains("footsteps") ||
+                        lowerPath.Contains("nature - essentials"))
+                    {
+                        continue;
+                    }
+
+                    bool isMixallBag =
+                        lowerPath.Contains("mixall") ||
+                        lowerPath.Contains("bags - props") ||
+                        lowerPath.Contains("bags-props") ||
+                        lowerPath.Contains("/bags/") ||
+                        lowerPath.Contains("backpack") ||
+                        lowerPath.Contains("rucksack") ||
+                        System.IO.Path.GetFileNameWithoutExtension(lowerPath).StartsWith("bag");
+
+                    if (!isMixallBag) continue;
+
+                    GameObject candidate = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    if (candidate == null) continue;
+                    if (candidate.GetComponentInChildren<MeshRenderer>() == null &&
+                        candidate.GetComponentInChildren<SkinnedMeshRenderer>() == null)
+                    {
+                        continue;
+                    }
+
+                    int score = 10;
+                    if (lowerPath.EndsWith(".prefab")) score += 50;
+                    if (lowerPath.Contains("mixall") || lowerPath.Contains("bags")) score += 40;
+                    if (lowerPath.Contains("bag_01") || lowerPath.Contains("bag_1") || lowerPath.Contains("backpack")) score += 20;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        chosenBagAsset = candidate;
+                        chosenPath = path;
+                    }
+                }
+            }
+
+            if (chosenBagAsset != null)
+            {
+                GameObject instance = Instantiate(chosenBagAsset, parent);
+                instance.name = "Mixall_Backpack_Model";
+                instance.transform.localPosition = Vector3.zero;
+                instance.transform.localRotation = Quaternion.identity;
+                instance.transform.localScale = Vector3.one;
+
+                // Авто-конвертация материалов из Built-in Standard (Unity 2018) в URP Lit, чтобы рюкзак НЕ был розовым!
+                UpgradeRenderersToURP(instance, new Color(0.28f, 0.35f, 0.24f, 1f));
+
+                // Выравниваем размер рюкзака (~0.55м) и ставим его ровно на землю
+                NormalizeModelBoundsOnGround(instance.transform, 0.56f);
+
+                Debug.Log($"[Dimari] Загружен 3D-рюкзак из ассета: {chosenPath}");
+                return true;
+            }
+#endif
+            return false;
+        }
+
+        private void UpgradeRenderersToURP(GameObject root, Color fallbackColor)
+        {
+            Shader urpLit = Shader.Find("Universal Render Pipeline/Lit");
+            if (urpLit == null) urpLit = Shader.Find("Standard");
+            if (urpLit == null) return;
+
+            Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+            foreach (Renderer r in renderers)
+            {
+                if (r == null || r.sharedMaterials == null) continue;
+                Material[] mats = r.sharedMaterials;
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    Material oldMat = mats[i];
+                    if (oldMat == null)
+                    {
+                        Material fallback = new Material(urpLit);
+                        SetMatColor(fallback, fallbackColor);
+                        mats[i] = fallback;
+                        continue;
+                    }
+
+                    string shaderName = oldMat.shader != null ? oldMat.shader.name : "";
+                    // Если материал использует старый Built-in Standard или InternalErrorShader — переводим на URP Lit с сохранением текстур!
+                    if (!shaderName.Contains("Universal Render Pipeline") && !shaderName.Contains("URP") && !shaderName.Contains("Toby"))
+                    {
+                        Texture mainTex = oldMat.HasProperty("_BaseMap") ? oldMat.GetTexture("_BaseMap") : null;
+                        if (mainTex == null && oldMat.HasProperty("_MainTex")) mainTex = oldMat.GetTexture("_MainTex");
+
+                        Texture bumpTex = oldMat.HasProperty("_BumpMap") ? oldMat.GetTexture("_BumpMap") : null;
+                        Texture metallicTex = oldMat.HasProperty("_MetallicGlossMap") ? oldMat.GetTexture("_MetallicGlossMap") : null;
+                        Texture occlusionTex = oldMat.HasProperty("_OcclusionMap") ? oldMat.GetTexture("_OcclusionMap") : null;
+
+                        Color col = Color.white;
+                        if (oldMat.HasProperty("_BaseColor")) col = oldMat.GetColor("_BaseColor");
+                        else if (oldMat.HasProperty("_Color")) col = oldMat.GetColor("_Color");
+
+                        Material newMat = new Material(urpLit);
+                        newMat.name = oldMat.name + "_URP";
+                        SetMatColor(newMat, col);
+
+                        if (mainTex != null)
+                        {
+                            if (newMat.HasProperty("_BaseMap")) newMat.SetTexture("_BaseMap", mainTex);
+                            if (newMat.HasProperty("_MainTex")) newMat.SetTexture("_MainTex", mainTex);
+                        }
+                        if (bumpTex != null && newMat.HasProperty("_BumpMap"))
+                        {
+                            newMat.SetTexture("_BumpMap", bumpTex);
+                            newMat.EnableKeyword("_NORMALMAP");
+                        }
+                        if (metallicTex != null && newMat.HasProperty("_MetallicGlossMap"))
+                        {
+                            newMat.SetTexture("_MetallicGlossMap", metallicTex);
+                        }
+                        if (occlusionTex != null && newMat.HasProperty("_OcclusionMap"))
+                        {
+                            newMat.SetTexture("_OcclusionMap", occlusionTex);
+                        }
+                        if (newMat.HasProperty("_Smoothness"))
+                        {
+                            newMat.SetFloat("_Smoothness", 0.25f);
+                        }
+
+                        mats[i] = newMat;
+                    }
+                }
+                r.sharedMaterials = mats;
+            }
+        }
+
+        private void NormalizeModelBoundsOnGround(Transform modelTransform, float targetSize)
+        {
+            Renderer[] renderers = modelTransform.GetComponentsInChildren<Renderer>(true);
+            if (renderers == null || renderers.Length == 0) return;
+
+            Bounds b = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                b.Encapsulate(renderers[i].bounds);
+            }
+
+            float maxDim = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
+            if (maxDim > 0.001f && (maxDim < 0.15f || maxDim > 1.2f))
+            {
+                float scaleFactor = targetSize / maxDim;
+                modelTransform.localScale *= scaleFactor;
+
+                // Пересчитываем Bounds после масштабирования
+                b = renderers[0].bounds;
+                for (int i = 1; i < renderers.Length; i++)
+                {
+                    b.Encapsulate(renderers[i].bounds);
+                }
+            }
+
+            float groundY = modelTransform.parent != null ? modelTransform.parent.position.y : modelTransform.position.y;
+            float offsetY = groundY - b.min.y + 0.02f;
+            modelTransform.position += new Vector3(0f, offsetY, 0f);
+        }
+
+        /// <summary>
+        /// Детализированный 3D-рюкзак из 12 частей (основной округлый корпус, верхний клапан, передний карман,
+        /// 2 боковых кармана, 2 плечевые лямки, ручка сверху и пряжки) — используется, если пользователь
+        /// ещё не нажал кнопку «Import» у пакета Bags - Props for Interior.
+        /// </summary>
+        private void CreateDetailedProceduralBackpack(Transform parent)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material oliveFabricMat = new Material(litShader);
+            SetMatColor(oliveFabricMat, new Color(0.22f, 0.29f, 0.19f, 1f));
+            if (oliveFabricMat.HasProperty("_Smoothness")) oliveFabricMat.SetFloat("_Smoothness", 0.18f);
+
+            Material darkFlapMat = new Material(litShader);
+            SetMatColor(darkFlapMat, new Color(0.15f, 0.19f, 0.13f, 1f));
+            if (darkFlapMat.HasProperty("_Smoothness")) darkFlapMat.SetFloat("_Smoothness", 0.22f);
+
+            Material strapLeatherMat = new Material(litShader);
+            SetMatColor(strapLeatherMat, new Color(0.26f, 0.17f, 0.10f, 1f));
+            if (strapLeatherMat.HasProperty("_Smoothness")) strapLeatherMat.SetFloat("_Smoothness", 0.35f);
+
+            Material buckleMetalMat = new Material(litShader);
+            SetMatColor(buckleMetalMat, new Color(0.75f, 0.72f, 0.62f, 1f));
+            if (buckleMetalMat.HasProperty("_Smoothness")) buckleMetalMat.SetFloat("_Smoothness", 0.75f);
+
+            GameObject root = new GameObject("DetailedBackpack_Mesh");
+            root.transform.SetParent(parent, false);
+            // Слегка наклонён на траве
+            root.transform.localPosition = new Vector3(0f, 0.04f, 0f);
+            root.transform.localRotation = Quaternion.Euler(18f, 0f, -8f);
+
+            // 1. Основной округлый корпус рюкзака
+            CreatePart(PrimitiveType.Capsule, "MainPackBody", root.transform,
+                new Vector3(0f, 0.24f, 0f), Quaternion.identity, new Vector3(0.36f, 0.26f, 0.24f), oliveFabricMat);
+
+            // 2. Нижняя уплотнённая база рюкзака
+            CreatePart(PrimitiveType.Cylinder, "PackBottomBase", root.transform,
+                new Vector3(0f, 0.09f, 0f), Quaternion.identity, new Vector3(0.35f, 0.06f, 0.23f), darkFlapMat);
+
+            // 3. Верхний клапан-крышка (капюшон рюкзака)
+            CreatePart(PrimitiveType.Sphere, "TopHoodFlap", root.transform,
+                new Vector3(0f, 0.42f, 0.01f), Quaternion.Euler(10f, 0f, 0f), new Vector3(0.37f, 0.16f, 0.26f), darkFlapMat);
+
+            // 4. Внешний передний накладной карман
+            CreatePart(PrimitiveType.Capsule, "FrontPocket", root.transform,
+                new Vector3(0f, 0.19f, 0.12f), Quaternion.identity, new Vector3(0.25f, 0.14f, 0.10f), darkFlapMat);
+
+            // 5. Левый и правый боковые карманы (под фляжку)
+            CreatePart(PrimitiveType.Cylinder, "LeftSidePocket", root.transform,
+                new Vector3(-0.18f, 0.17f, 0f), Quaternion.Euler(0f, 0f, 8f), new Vector3(0.09f, 0.10f, 0.12f), darkFlapMat);
+            CreatePart(PrimitiveType.Cylinder, "RightSidePocket", root.transform,
+                new Vector3(0.18f, 0.17f, 0f), Quaternion.Euler(0f, 0f, -8f), new Vector3(0.09f, 0.10f, 0.12f), darkFlapMat);
+
+            // 6. Кожаные ремни закрытия клапана спереди
+            CreatePart(PrimitiveType.Cube, "LeftFrontStrap", root.transform,
+                new Vector3(-0.08f, 0.30f, 0.135f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.032f, 0.22f, 0.018f), strapLeatherMat);
+            CreatePart(PrimitiveType.Cube, "RightFrontStrap", root.transform,
+                new Vector3(0.08f, 0.30f, 0.135f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.032f, 0.22f, 0.018f), strapLeatherMat);
+
+            // 7. Металлические пряжки на ремнях
+            CreatePart(PrimitiveType.Cube, "LeftBuckle", root.transform,
+                new Vector3(-0.08f, 0.25f, 0.145f), Quaternion.identity, new Vector3(0.045f, 0.035f, 0.02f), buckleMetalMat);
+            CreatePart(PrimitiveType.Cube, "RightBuckle", root.transform,
+                new Vector3(0.08f, 0.25f, 0.145f), Quaternion.identity, new Vector3(0.045f, 0.035f, 0.02f), buckleMetalMat);
+
+            // 8. Задние плечевые лямки и верхняя петля-ручка
+            CreatePart(PrimitiveType.Capsule, "ShoulderStrapLeft", root.transform,
+                new Vector3(-0.09f, 0.25f, -0.12f), Quaternion.Euler(8f, 0f, 0f), new Vector3(0.055f, 0.18f, 0.04f), strapLeatherMat);
+            CreatePart(PrimitiveType.Capsule, "ShoulderStrapRight", root.transform,
+                new Vector3(0.09f, 0.25f, -0.12f), Quaternion.Euler(8f, 0f, 0f), new Vector3(0.055f, 0.18f, 0.04f), strapLeatherMat);
+            CreatePart(PrimitiveType.Cylinder, "TopCarryLoop", root.transform,
+                new Vector3(0f, 0.49f, -0.04f), Quaternion.Euler(0f, 0f, 90f), new Vector3(0.03f, 0.06f, 0.03f), strapLeatherMat);
+        }
+
+        private void CreateDetailedTabletModel(Transform parent)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material bodyMat = new Material(litShader);
+            SetMatColor(bodyMat, new Color(0.14f, 0.15f, 0.18f, 1f));
+            if (bodyMat.HasProperty("_Smoothness")) bodyMat.SetFloat("_Smoothness", 0.72f);
+
+            Material bezelMat = new Material(litShader);
+            SetMatColor(bezelMat, new Color(0.05f, 0.05f, 0.06f, 1f));
+            if (bezelMat.HasProperty("_Smoothness")) bezelMat.SetFloat("_Smoothness", 0.85f);
+
+            Material screenMat = new Material(litShader);
+            Color screenGlow = new Color(0.18f, 0.78f, 0.96f, 1f);
+            SetMatColor(screenMat, screenGlow);
+            if (screenMat.HasProperty("_EmissionColor"))
+            {
+                screenMat.EnableKeyword("_EMISSION");
+                screenMat.SetColor("_EmissionColor", screenGlow * 1.4f);
+            }
+
+            Material routeLineMat = new Material(litShader);
+            Color routeColor = new Color(1.0f, 0.82f, 0.25f, 1f);
+            SetMatColor(routeLineMat, routeColor);
+
+            // Алюминиевый корпус планшета
+            CreatePart(PrimitiveType.Cube, "TabletChassis", parent,
+                new Vector3(0f, 0.05f, 0f), Quaternion.Euler(8f, 0f, -5f), new Vector3(0.38f, 0.022f, 0.26f), bodyMat);
+
+            // Чёрная стеклянная рамка
+            CreatePart(PrimitiveType.Cube, "TabletBezel", parent,
+                new Vector3(0f, 0.062f, 0f), Quaternion.Euler(8f, 0f, -5f), new Vector3(0.36f, 0.008f, 0.24f), bezelMat);
+
+            // Светящийся экран с GPS-картой
+            CreatePart(PrimitiveType.Cube, "TabletGlowScreen", parent,
+                new Vector3(0f, 0.066f, 0f), Quaternion.Euler(8f, 0f, -5f), new Vector3(0.32f, 0.006f, 0.20f), screenMat);
+
+            // Жёлтая линия маршрута до Рогово на экране
+            CreatePart(PrimitiveType.Cube, "MapRouteLine", parent,
+                new Vector3(0.01f, 0.070f, 0.01f), Quaternion.Euler(8f, 28f, -5f), new Vector3(0.18f, 0.004f, 0.016f), routeLineMat);
+        }
+
+        private void CreateDetailedRogovoSignpost(Transform parent)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material woodPostMat = new Material(litShader);
+            SetMatColor(woodPostMat, new Color(0.38f, 0.25f, 0.14f, 1f));
+            if (woodPostMat.HasProperty("_Smoothness")) woodPostMat.SetFloat("_Smoothness", 0.2f);
+
+            Material signBoardMat = new Material(litShader);
+            SetMatColor(signBoardMat, new Color(0.48f, 0.33f, 0.18f, 1f));
+
+            CreatePart(PrimitiveType.Cylinder, "SignPost", parent,
+                new Vector3(0f, 0.90f, 0f), Quaternion.identity, new Vector3(0.11f, 0.90f, 0.11f), woodPostMat);
+
+            CreatePart(PrimitiveType.Cube, "SignBoard", parent,
+                new Vector3(0.18f, 1.50f, 0f), Quaternion.identity, new Vector3(0.85f, 0.24f, 0.06f), signBoardMat);
+
+            // 3D-надпись «РОГОВО ->» прямо на деревянном указателе
+            GameObject textObj = new GameObject("SignText_Rogovo");
+            textObj.transform.SetParent(parent, false);
+            textObj.transform.localPosition = new Vector3(0.18f, 1.52f, -0.036f);
+            textObj.transform.localRotation = Quaternion.identity;
+            TextMesh tm = textObj.AddComponent<TextMesh>();
+            tm.text = "РОГОВО  →";
+            tm.characterSize = 0.045f;
+            tm.fontSize = 36;
+            tm.fontStyle = FontStyle.Bold;
+            tm.anchor = TextAnchor.MiddleCenter;
+            tm.alignment = TextAlignment.Center;
+            tm.color = new Color(0.96f, 0.92f, 0.78f, 1f);
+
+            BoxCollider signCol = parent.gameObject.AddComponent<BoxCollider>();
+            signCol.center = new Vector3(0.1f, 1.0f, 0f);
+            signCol.size = new Vector3(0.95f, 1.8f, 0.5f);
+        }
+
+        private GameObject CreatePart(PrimitiveType type, string partName, Transform parent, Vector3 localPos, Quaternion localRot, Vector3 localScale, Material mat)
+        {
+            GameObject part = GameObject.CreatePrimitive(type);
+            part.name = partName;
+            part.transform.SetParent(parent, false);
+            part.transform.localPosition = localPos;
+            part.transform.localRotation = localRot;
+            part.transform.localScale = localScale;
+            Collider c = part.GetComponent<Collider>();
+            if (c != null) DestroyImmediate(c);
+            Renderer r = part.GetComponent<Renderer>();
+            if (r != null) r.sharedMaterial = mat;
+            return part;
+        }
+
+        private static void SetMatColor(Material m, Color c)
+        {
+            if (m == null) return;
+            if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", c);
+            if (m.HasProperty("_Color")) m.SetColor("_Color", c);
+        }
+
+        private Vector3 GetGroundPoint(Vector3 pos, float fallbackY)
+        {
+            RaycastHit[] hits = Physics.RaycastAll(pos + Vector3.up * 20f, Vector3.down, 60f, ~0, QueryTriggerInteraction.Ignore);
+            float bestY = fallbackY;
+            bool found = false;
+            foreach (RaycastHit h in hits)
+            {
+                if (h.transform.CompareTag("Player")) continue;
+                if (h.transform.GetComponentInParent<InteractableStoryObject>() != null) continue;
+                if (!found || h.point.y > bestY)
+                {
+                    bestY = h.point.y;
+                    found = true;
+                }
+            }
+            return new Vector3(pos.x, bestY, pos.z);
+        }
+
+        private void Update()
+        {
+            if (_statusToastTimer > 0f)
+            {
+                _statusToastTimer -= Time.unscaledDeltaTime;
+            }
+
+            if (_isMenuOpen)
+            {
+                Time.timeScale = 1.0f;
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+
+                if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
+                if (_director != null && _director.enabled)
+                {
+                    _director.StopAllCoroutines();
+                    _director.enabled = false;
+                }
+            }
+
+            if (DimariInput.IsPauseMenuPressed())
+            {
+                if (_isSettingsOpen)
+                {
+                    _isSettingsOpen = false;
+                }
+                else if (_isMenuOpen && _hasGameStarted)
+                {
+                    ResumeFromPause();
+                }
+                else if (!_isMenuOpen)
+                {
+                    OpenPauseMenu();
+                }
+            }
+
+            if (DimariInput.IsQuickSavePressed() && _hasGameStarted)
+            {
+                SaveGame();
+            }
+
+            if (_isMenuOpen && DimariInput.IsSettingsShortcutPressed())
+            {
+                _isSettingsOpen = !_isSettingsOpen;
+            }
+
+            // Плавное затухание субтитров
+            if (_subtitleTimer > 0f)
+            {
+                _subtitleTimer -= Time.deltaTime;
+                _subtitleAlpha = Mathf.MoveTowards(_subtitleAlpha, 1f, Time.deltaTime * 5f);
+            }
+            else
+            {
+                _subtitleAlpha = Mathf.MoveTowards(_subtitleAlpha, 0f, Time.deltaTime * 2.5f);
+            }
+        }
+
+        private void LateUpdate()
+        {
+            // Когда открыто Главное Меню или Пауза — ставим камеру так, чтобы
+            // ПЕРСОНАЖ ГАРАНТИРОВАННО СТОЯЛ В ПРАВОЙ ЧАСТИ ЭКРАНА (а не слева поверх кнопок!),
+            // а за ним качались на ветру деревья леса!
+            if (!_isMenuOpen) return;
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_mainCam == null) _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+            if (_player == null || _mainCam == null) return;
+
+            // Персонаж стоит ровно вертикально
+            if (_player.visualModelRoot != null)
+            {
+                _player.visualModelRoot.localPosition = Vector3.zero;
+                _player.visualModelRoot.localRotation = Quaternion.identity;
+            }
+
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+            if (_cameraController != null)
+            {
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+
+            _menuCamOrbitTimer += Time.unscaledDeltaTime;
+            float swayX = Mathf.Sin(_menuCamOrbitTimer * 0.45f) * 0.06f;
+            float swayY = Mathf.Cos(_menuCamOrbitTimer * 0.35f) * 0.03f;
+
+            Vector3 pPos = _player.transform.position;
+            Vector3 pForward = _player.transform.forward;
+            pForward.y = 0f;
+            if (pForward.sqrMagnitude < 0.01f) pForward = Vector3.forward;
+            pForward.Normalize();
+
+            // Камера стоит спереди от персонажа и смотрит на него
+            Vector3 camPos = pPos + pForward * 2.65f + Vector3.up * (1.28f + swayY) + _player.transform.right * swayX;
+            Vector3 characterChest = pPos + Vector3.up * 1.18f;
+
+            // Сначала направляем камеру прямо на грудь персонажа, а затем поворачиваем камеру ВЛЕВО на -20 градусов:
+            // когда камера поворачивается влево, персонаж в кадре смещается ВПРАВО (на правую половину экрана, ~72% по X)!
+            Quaternion lookDirect = Quaternion.LookRotation(characterChest - camPos, Vector3.up);
+            Quaternion lookWithCharacterOnRight = lookDirect * Quaternion.Euler(0f, -20f, 0f);
+
+            _mainCam.transform.position = camPos;
+            _mainCam.transform.rotation = lookWithCharacterOnRight;
+
+            // Математическая проверка через WorldToViewportPoint: если вдруг персонаж оказался левее центра (x < 0.5),
+            // зеркалим угол поворота, чтобы персонаж 100% ВСЕГДА стоял СПРАВА экрана!
+            Vector3 vp = _mainCam.WorldToViewportPoint(characterChest);
+            if (vp.x < 0.5f)
+            {
+                _mainCam.transform.rotation = lookDirect * Quaternion.Euler(0f, +20f, 0f);
+            }
+        }
+
+        public void OpenMainMenuOnStartup()
+        {
+            _isMenuOpen = true;
+            _isSettingsOpen = false;
+            _hasGameStarted = false;
+            _showHUD = false;
+            Time.timeScale = 1.0f;
+
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+
+            if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
+            if (_director != null)
+            {
+                _director.StopAllCoroutines();
+                _director.enabled = false;
+            }
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player != null)
+            {
+                _player.IsControlEnabled = false;
+                if (_player.visualModelRoot != null)
+                {
+                    _player.visualModelRoot.localPosition = Vector3.zero;
+                    _player.visualModelRoot.localRotation = Quaternion.identity;
+                }
+            }
+
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = true;
+                _cameraController.IsCutsceneControlled = false;
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+        }
+
+        public void OpenPauseMenu()
+        {
+            _isMenuOpen = true;
+            _isSettingsOpen = false;
+            Time.timeScale = 1.0f;
+
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+
+            if (_player != null)
+            {
+                _player.IsControlEnabled = false;
+            }
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = true;
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+        }
+
+        public void ResumeFromPause()
+        {
+            _isMenuOpen = false;
+            _isSettingsOpen = false;
+            Time.timeScale = 1.0f;
+
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = false;
+                _cameraController.UpdateCharacterMeshVisibility(_cameraController.isFirstPerson);
+            }
+
+            if (_director != null && _director.IsPlayingCutscene)
+            {
+                _player.IsControlEnabled = false;
+            }
+            else if (_player != null)
+            {
+                _player.IsControlEnabled = true;
+                _showHUD = true;
+            }
+        }
+
+        public void StartNewGame()
+        {
+            _isMenuOpen = false;
+            _isSettingsOpen = false;
+            _hasGameStarted = true;
+            _isChapter2Reached = false;
+            Time.timeScale = 1.0f;
+
+            SetupDimariQuests();
+
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = false;
+            }
+
+            if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
+            if (_director != null)
+            {
+                _director.enabled = true;
+                _director.StartAwakeningCutscene();
+            }
+            else
+            {
+                if (_player != null) _player.IsControlEnabled = true;
+                _showHUD = true;
+            }
+        }
+
+        public void SaveGame()
+        {
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player != null)
+            {
+                Vector3 pos = _player.transform.position;
+                PlayerPrefs.SetFloat("Dimari_Save_PosX", pos.x);
+                PlayerPrefs.SetFloat("Dimari_Save_PosY", pos.y);
+                PlayerPrefs.SetFloat("Dimari_Save_PosZ", pos.z);
+                PlayerPrefs.SetFloat("Dimari_Save_RotY", _player.transform.eulerAngles.y);
+            }
+
+            for (int i = 0; i < questSteps.Count; i++)
+            {
+                PlayerPrefs.SetInt("Dimari_Save_Quest_" + questSteps[i].id, questSteps[i].isCompleted ? 1 : 0);
+            }
+
+            PlayerPrefs.SetInt("Dimari_HasSave", 1);
+            PlayerPrefs.Save();
+
+            ShowStatusToast("Игра успешно сохранена!");
+        }
+
+        public void LoadSavedGame()
+        {
+            if (PlayerPrefs.GetInt("Dimari_HasSave", 0) == 0)
+            {
+                ShowStatusToast("Нет сохранённой игры — начинаем новую!");
+                StartNewGame();
+                return;
+            }
+
+            _isMenuOpen = false;
+            _isSettingsOpen = false;
+            _hasGameStarted = true;
+            Time.timeScale = 1.0f;
+
+            if (_director != null)
+            {
+                _director.StopAllCoroutines();
+                _director.FinishAwakeningImmediately();
+                _director.enabled = false;
+            }
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player != null && PlayerPrefs.HasKey("Dimari_Save_PosX"))
+            {
+                CharacterController cc = _player.GetComponent<CharacterController>();
+                if (cc != null) cc.enabled = false;
+
+                Vector3 savedPos = new Vector3(
+                    PlayerPrefs.GetFloat("Dimari_Save_PosX"),
+                    PlayerPrefs.GetFloat("Dimari_Save_PosY"),
+                    PlayerPrefs.GetFloat("Dimari_Save_PosZ")
+                );
+                _player.transform.position = savedPos;
+                _player.transform.rotation = Quaternion.Euler(0f, PlayerPrefs.GetFloat("Dimari_Save_RotY", 0f), 0f);
+
+                if (cc != null) cc.enabled = true;
+                _player.IsControlEnabled = true;
+            }
+
+            for (int i = 0; i < questSteps.Count; i++)
+            {
+                questSteps[i].isCompleted = PlayerPrefs.GetInt("Dimari_Save_Quest_" + questSteps[i].id, 0) == 1;
+            }
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = false;
+                _cameraController.IsCutsceneControlled = false;
+            }
+
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            _showHUD = true;
+
+            ShowStatusToast("Сохранение загружено!");
+        }
+
+        public void ShowStatusToast(string msg)
+        {
+            _statusToast = msg;
+            _statusToastTimer = 3.0f;
+        }
+
+        public void SetHUDVisible(bool visible)
+        {
+            _showHUD = visible;
+        }
+
+        public void ShowMonologue(string text, float duration = 5.5f)
+        {
+            _currentSubtitle = text;
+            _subtitleTimer = duration;
+            _subtitleAlpha = 1.0f;
+        }
+
+        public void SetInteractionPrompt(string prompt)
+        {
+            _interactionPrompt = prompt;
+        }
+
+        public void CompleteQuestStep(string stepId, string monologueText)
+        {
+            foreach (QuestStep step in questSteps)
+            {
+                if (step.id == stepId && !step.isCompleted)
+                {
+                    step.isCompleted = true;
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(monologueText))
+            {
+                ShowMonologue(monologueText, 7.0f);
+            }
+
+            if (ProceduralForestAudio.Instance != null)
+            {
+                string voiceKey = stepId;
+                if (stepId == "find_backpack") voiceKey = "backpack";
+                else if (stepId == "find_tablet") voiceKey = "tablet";
+                ProceduralForestAudio.Instance.PlayQuestVoiceClip(voiceKey);
+            }
+
+            if (stepId == "rogovo_exit")
+            {
+                _isChapter2Reached = true;
+                SaveGame();
+            }
+        }
+
+        private static void ConfigureStyle(ref GUIStyle style, int fontSize, FontStyle fontStyle, TextAnchor alignment, Color textColor, bool wordWrap = false)
+        {
+            if (style == null)
+            {
+                style = new GUIStyle(GUI.skin != null ? GUI.skin.label : new GUIStyle());
+            }
+            style.fontSize = fontSize;
+            style.fontStyle = fontStyle;
+            style.alignment = alignment;
+            style.wordWrap = wordWrap;
+            style.richText = true;
+            style.normal.textColor = textColor;
+            style.hover.textColor = textColor;
+            style.active.textColor = textColor;
+            style.focused.textColor = textColor;
+        }
+
+        private void EnsureStyles()
+        {
+            if (_darkPanelTex == null)
+            {
+                _darkPanelTex = new Texture2D(1, 1);
+                _darkPanelTex.SetPixel(0, 0, new Color(0.05f, 0.07f, 0.08f, 0.84f));
+                _darkPanelTex.Apply();
+            }
+
+            if (_subtitlePanelTex == null)
+            {
+                _subtitlePanelTex = new Texture2D(1, 1);
+                _subtitlePanelTex.SetPixel(0, 0, new Color(0.03f, 0.04f, 0.05f, 0.90f));
+                _subtitlePanelTex.Apply();
+            }
+
+            if (_menuLeftGradientTex == null)
+            {
+                int w = 128;
+                _menuLeftGradientTex = new Texture2D(w, 1);
+                _menuLeftGradientTex.wrapMode = TextureWrapMode.Clamp;
+                for (int x = 0; x < w; x++)
+                {
+                    float norm = (float)x / (w - 1);
+                    // Лёгкий полупрозрачный градиент только под левыми кнопками, без глухого чёрного фона!
+                    float alpha = Mathf.Pow(1f - norm, 2.0f) * 0.68f;
+                    _menuLeftGradientTex.SetPixel(x, 0, new Color(0.04f, 0.05f, 0.06f, alpha));
+                }
+                _menuLeftGradientTex.Apply();
+            }
+
+            if (_buttonHoverBarTex == null)
+            {
+                int w = 64;
+                _buttonHoverBarTex = new Texture2D(w, 1);
+                _buttonHoverBarTex.wrapMode = TextureWrapMode.Clamp;
+                for (int x = 0; x < w; x++)
+                {
+                    float norm = (float)x / (w - 1);
+                    float alpha = Mathf.Lerp(0.45f, 0.0f, norm);
+                    _buttonHoverBarTex.SetPixel(x, 0, new Color(0.92f, 0.95f, 0.92f, alpha));
+                }
+                _buttonHoverBarTex.Apply();
+            }
+
+            if (_accentBarTex == null)
+            {
+                _accentBarTex = new Texture2D(1, 1);
+                _accentBarTex.SetPixel(0, 0, new Color(0.96f, 0.97f, 0.95f, 1.0f));
+                _accentBarTex.Apply();
+            }
+
+            if (_goldAccentTex == null)
+            {
+                _goldAccentTex = new Texture2D(1, 1);
+                _goldAccentTex.SetPixel(0, 0, new Color(1.0f, 0.84f, 0.38f, 1.0f));
+                _goldAccentTex.Apply();
+            }
+
+            if (_logoBoxTex == null)
+            {
+                _logoBoxTex = new Texture2D(1, 1);
+                _logoBoxTex.SetPixel(0, 0, new Color(0.94f, 0.94f, 0.92f, 0.97f));
+                _logoBoxTex.Apply();
+            }
+
+            if (_keyCapTex == null)
+            {
+                _keyCapTex = new Texture2D(1, 1);
+                _keyCapTex.SetPixel(0, 0, new Color(0.92f, 0.92f, 0.92f, 0.96f));
+                _keyCapTex.Apply();
+            }
+
+            if (!_stylesInitialized || _logoMainStyle == null || _logoMainStyle.fontSize != 26)
+            {
+                _stylesInitialized = true;
+
+                ConfigureStyle(ref _logoMainStyle, 26, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.06f, 0.07f, 0.07f, 1f), false);
+                ConfigureStyle(ref _menuBtnStyle, 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.92f, 0.94f, 0.92f, 0.98f), false);
+                ConfigureStyle(ref _menuBtnHoverStyle, 20, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white, false);
+                ConfigureStyle(ref _questHeaderStyle, 17, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1.0f, 0.86f, 0.42f, 1f), false);
+                ConfigureStyle(ref _questActiveStyle, 15, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white, true);
+                ConfigureStyle(ref _questDoneStyle, 15, FontStyle.Italic, TextAnchor.MiddleLeft, new Color(0.55f, 0.95f, 0.62f, 0.95f), true);
+                ConfigureStyle(ref _subtitleSpeakerStyle, 14, FontStyle.Bold, TextAnchor.UpperCenter, new Color(1.0f, 0.84f, 0.38f, 1f), false);
+                ConfigureStyle(ref _subtitleStyle, 19, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.99f, 0.98f, 0.94f, 1f), true);
+                ConfigureStyle(ref _promptStyle, 17, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1.0f, 0.92f, 0.55f, 1f), false);
+                ConfigureStyle(ref _bottomBarTextStyle, 14, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.94f, 0.96f, 0.94f, 0.98f), false);
+                ConfigureStyle(ref _keyCapStyle, 12, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.06f, 0.06f, 0.06f, 1f), false);
+                ConfigureStyle(ref _settingsLabelStyle, 15, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.96f, 0.97f, 0.96f, 1f), false);
+                ConfigureStyle(ref _chapter2TitleStyle, 28, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1.0f, 0.88f, 0.45f, 1f), false);
+            }
+        }
+
+        private void OnGUI()
+        {
+            // Поверх любых оверлеев кат-сцены, чтобы субтитры и интерфейс ВСЕГДА были яркими и читаемыми!
+            GUI.depth = -100;
+            GUI.color = Color.white;
+            GUI.contentColor = Color.white;
+            GUI.backgroundColor = Color.white;
+
+            EnsureStyles();
+
+            if (_isMenuOpen)
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+                DrawDyingLightStyleMenu();
+                DrawToastIfActive();
+                return;
+            }
+
+            if (_isChapter2Reached)
+            {
+                DrawChapter2TransitionOverlay();
+            }
+
+            // СУБТИТРЫ ОЗВУЧКИ И МОНОЛОГОВ ВНИЗУ ЭКРАНА
+            DrawSubtitlesBar();
+
+            DrawToastIfActive();
+
+            if (!_showHUD) return;
+
+            // КВЕСТ-ЛОГ В ЛЕВОМ ВЕРХНЕМ УГЛУ (белый и золотой текст!)
+            float panelX = 24f;
+            float panelY = 24f;
+            float panelW = 460f;
+            float panelH = 54f + questSteps.Count * 38f;
+
+            GUI.DrawTexture(new Rect(panelX, panelY, panelW, panelH), _darkPanelTex);
+            GUI.DrawTexture(new Rect(panelX, panelY, 4f, panelH), _goldAccentTex);
+            GUI.Label(
+                new Rect(panelX + 16f, panelY + 10f, panelW - 28f, 28f),
+                $"<color=#FFDB6B><b>{questHeader}</b></color>",
+                _questHeaderStyle
+            );
+
+            float curY = panelY + 42f;
+            foreach (QuestStep step in questSteps)
+            {
+                if (step.isCompleted)
+                {
+                    GUI.Label(
+                        new Rect(panelX + 16f, curY, panelW - 28f, 36f),
+                        $"<color=#8CEB9E>✓ {step.title}</color>",
+                        _questDoneStyle
+                    );
+                }
+                else
+                {
+                    GUI.Label(
+                        new Rect(panelX + 16f, curY, panelW - 28f, 36f),
+                        $"<color=#FFFFFF><b>{step.title}</b></color>",
+                        _questActiveStyle
+                    );
+                }
+                curY += 36f;
+            }
+
+            // Прицельная точка по центру экрана
+            float centerX = Screen.width * 0.5f;
+            float centerY = Screen.height * 0.5f;
+            GUI.DrawTexture(new Rect(centerX - 2f, centerY - 2f, 4f, 4f), _accentBarTex);
+
+            // Подсказка взаимодействия [E] по центру экрана (ярко-жёлтый текст на тёмной плашке)
+            if (!string.IsNullOrEmpty(_interactionPrompt))
+            {
+                float pW = 500f;
+                float pH = 44f;
+                Rect pRect = new Rect(centerX - pW * 0.5f, centerY + 32f, pW, pH);
+                GUI.DrawTexture(pRect, _subtitlePanelTex);
+                GUI.DrawTexture(new Rect(pRect.x, pRect.y, pRect.width, 2f), _goldAccentTex);
+                GUI.Label(
+                    pRect,
+                    $"<color=#FFE875><b>{_interactionPrompt}</b></color>",
+                    _promptStyle
+                );
+            }
+
+            // Нижняя строка управления
+            GUI.DrawTexture(new Rect(24f, Screen.height - 42f, 520f, 30f), _darkPanelTex);
+            GUI.Label(
+                new Rect(36f, Screen.height - 40f, 500f, 26f),
+                "<color=#F0F4F0>[ESC] Меню / Пауза   [F5] Сохранить   [E] Осмотреть   [V] 1/3 лицо</color>",
+                _bottomBarTextStyle
+            );
+        }
+
+        private void DrawSubtitlesBar()
+        {
+            if (_subtitleAlpha <= 0.01f || string.IsNullOrEmpty(_currentSubtitle))
+            {
+                return;
+            }
+
+            float boxW = Mathf.Min(880f, Screen.width - 80f);
+            float boxH = 92f;
+            float boxX = (Screen.width - boxW) * 0.5f;
+            float boxY = Screen.height - 142f;
+
+            Color prevColor = GUI.color;
+            GUI.color = new Color(1f, 1f, 1f, _subtitleAlpha);
+
+            GUI.DrawTexture(new Rect(boxX, boxY, boxW, boxH), _subtitlePanelTex);
+            GUI.DrawTexture(new Rect(boxX, boxY, boxW, 3f), _goldAccentTex);
+
+            GUI.Label(
+                new Rect(boxX + 20f, boxY + 8f, boxW - 40f, 22f),
+                "<color=#FFD86B><b>ГЛАВНЫЙ ГЕРОЙ</b></color>",
+                _subtitleSpeakerStyle
+            );
+
+            GUI.Label(
+                new Rect(boxX + 24f, boxY + 28f, boxW - 48f, boxH - 34f),
+                $"<color=#FFFDF5><b>{_currentSubtitle}</b></color>",
+                _subtitleStyle
+            );
+
+            GUI.color = prevColor;
+        }
+
+        private void DrawDyingLightStyleMenu()
+        {
+            float w = Screen.width;
+            float h = Screen.height;
+
+            // 1. Полупрозрачный мягкий градиент только под левой колонкой меню (0..38%),
+            //    справа полностью чистый экран с живым лесом и главным героем!
+            GUI.DrawTexture(new Rect(0f, 0f, w * 0.38f, h), _menuLeftGradientTex);
+
+            // 2. Логотип «ПОИСКИ ДИМАРИКА» крупно по центру белой плашки в одну строку
+            float logoX = 64f;
+            float logoY = 72f;
+            float logoW = 395f;
+            float logoH = 58f;
+
+            GUI.DrawTexture(new Rect(logoX, logoY, logoW, logoH), _logoBoxTex);
+            GUI.Label(
+                new Rect(logoX + 8f, logoY + 4f, logoW - 16f, logoH - 8f),
+                "<color=#101212><size=25><b>ПОИСКИ ДИМАРИКА</b></size></color>",
+                _logoMainStyle
+            );
+
+            if (!_isSettingsOpen)
+            {
+                float btnX = 64f;
+                float btnY = 205f;
+                float btnW = 390f;
+                float btnH = 46f;
+                float spacing = 56f;
+
+                int row = 0;
+
+                if (_hasGameStarted)
+                {
+                    if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "ВЕРНУТЬСЯ В ИГРУ", row))
+                    {
+                        ResumeFromPause();
+                    }
+                    row++;
+                }
+
+                // 1. НАЧАТЬ НОВУЮ ИГРУ
+                if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "НАЧАТЬ НОВУЮ ИГРУ", row))
+                {
+                    StartNewGame();
+                }
+                row++;
+
+                // 2. СОХРАНИТЬ ИГРУ / ЗАГРУЗИТЬ СОХРАНЕНИЕ
+                if (_hasGameStarted)
+                {
+                    if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "СОХРАНИТЬ ИГРУ", row))
+                    {
+                        SaveGame();
+                    }
+                    row++;
+                }
+                else if (PlayerPrefs.GetInt("Dimari_HasSave", 0) == 1)
+                {
+                    if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "ЗАГРУЗИТЬ СОХРАНЕНИЕ", row))
+                    {
+                        LoadSavedGame();
+                    }
+                    row++;
+                }
+                else
+                {
+                    if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "СОХРАНЕНИЕ", row))
+                    {
+                        SaveGame();
+                    }
+                    row++;
+                }
+
+                // 3. НАСТРОЙКИ
+                if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "НАСТРОЙКИ", row))
+                {
+                    _isSettingsOpen = true;
+                }
+                row++;
+
+                // 4. ВЫХОД
+                if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "ВЫХОД", row))
+                {
+#if UNITY_EDITOR
+                    UnityEditor.EditorApplication.isPlaying = false;
+#else
+                    Application.Quit();
+#endif
+                }
+            }
+            else
+            {
+                DrawSettingsPanel(64f, 185f);
+            }
+
+            // Нижняя строка подсказок (белый чёткий текст)
+            float bottomY = h - 52f;
+            DrawKeyHint(64f, bottomY, "ESC", _isSettingsOpen ? "Назад" : (_hasGameStarted ? "В игру" : "Выход"));
+            DrawKeyHint(195f, bottomY, "F5", "Быстрое сохранение");
+            DrawKeyHint(405f, bottomY, "O", "Настройки");
+
+            GUI.Label(
+                new Rect(w - 140f, bottomY, 125f, 26f),
+                "<color=#E8ECE8><b>ВЕР. 1.3.0</b></color>",
+                _bottomBarTextStyle
+            );
+        }
+
+        private bool DrawMenuButton(Rect rect, string label, int index)
+        {
+            Vector2 mousePos = Event.current.mousePosition;
+            bool isHovered = rect.Contains(mousePos);
+            if (isHovered)
+            {
+                _selectedMenuIndex = index;
+            }
+
+            bool isHighlighted = isHovered || (_selectedMenuIndex == index);
+
+            if (isHighlighted)
+            {
+                GUI.DrawTexture(rect, _buttonHoverBarTex);
+                GUI.DrawTexture(new Rect(rect.x, rect.y + 4f, 4f, rect.height - 8f), _goldAccentTex);
+            }
+
+            GUIStyle style = isHighlighted ? _menuBtnHoverStyle : _menuBtnStyle;
+            string coloredLabel = isHighlighted
+                ? $"<color=#FFFFFF><size=19><b>{label}</b></size></color>"
+                : $"<color=#E6EAE6><size=17><b>{label}</b></size></color>";
+
+            GUI.Label(new Rect(rect.x + 18f, rect.y, rect.width - 18f, rect.height), coloredLabel, style);
+
+            if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && rect.Contains(Event.current.mousePosition))
+            {
+                Event.current.Use();
+                if (ProceduralForestAudio.Instance != null)
+                {
+                    ProceduralForestAudio.Instance.PlayInteractSound();
+                }
+                return true;
+            }
+
+            return GUI.Button(rect, GUIContent.none, GUIStyle.none);
+        }
+
+        private void DrawSettingsPanel(float startX, float startY)
+        {
+            float panelW = 440f;
+            float panelH = 355f;
+            GUI.DrawTexture(new Rect(startX - 12f, startY - 12f, panelW, panelH), _subtitlePanelTex);
+            GUI.DrawTexture(new Rect(startX - 12f, startY - 12f, 4f, panelH), _goldAccentTex);
+
+            GUI.Label(
+                new Rect(startX + 8f, startY, 400f, 28f),
+                "<color=#FFDB6B><size=16><b>НАСТРОЙКИ ГРОМКОСТИ И КАМЕРЫ</b></size></color>",
+                _questHeaderStyle
+            );
+
+            float master = ProceduralForestAudio.Instance != null ? ProceduralForestAudio.Instance.masterVolume : 1.0f;
+            float voice = ProceduralForestAudio.Instance != null ? ProceduralForestAudio.Instance.voiceVolume : 1.0f;
+            float env = PlayerPrefs.GetFloat("Dimari_EnvVol", 0.7f);
+            float sens = _cameraController != null ? _cameraController.mouseSensitivity : 2.2f;
+
+            float y = startY + 44f;
+
+            GUI.Label(
+                new Rect(startX + 8f, y, 235f, 24f),
+                $"<color=#FFFFFF><b>Общая громкость: {Mathf.RoundToInt(master * 100f)}%</b></color>",
+                _settingsLabelStyle
+            );
+            float newMaster = GUI.HorizontalSlider(new Rect(startX + 245f, y + 6f, 160f, 20f), master, 0f, 1f);
+            y += 44f;
+
+            GUI.Label(
+                new Rect(startX + 8f, y, 235f, 24f),
+                $"<color=#FFFFFF><b>Громкость озвучки: {Mathf.RoundToInt(voice * 100f)}%</b></color>",
+                _settingsLabelStyle
+            );
+            float newVoice = GUI.HorizontalSlider(new Rect(startX + 245f, y + 6f, 160f, 20f), voice, 0f, 1f);
+            y += 44f;
+
+            GUI.Label(
+                new Rect(startX + 8f, y, 235f, 24f),
+                $"<color=#FFFFFF><b>Звуки леса и шагов: {Mathf.RoundToInt(env * 100f)}%</b></color>",
+                _settingsLabelStyle
+            );
+            float newEnv = GUI.HorizontalSlider(new Rect(startX + 245f, y + 6f, 160f, 20f), env, 0f, 1f);
+            y += 44f;
+
+            if (ProceduralForestAudio.Instance != null &&
+                (Mathf.Abs(newMaster - master) > 0.005f || Mathf.Abs(newVoice - voice) > 0.005f || Mathf.Abs(newEnv - env) > 0.005f))
+            {
+                ProceduralForestAudio.Instance.ApplyVolumeSettings(newMaster, newVoice, newEnv);
+            }
+
+            GUI.Label(
+                new Rect(startX + 8f, y, 235f, 24f),
+                $"<color=#FFFFFF><b>Чувствительность мыши: {sens:F1}</b></color>",
+                _settingsLabelStyle
+            );
+            float newSens = GUI.HorizontalSlider(new Rect(startX + 245f, y + 6f, 160f, 20f), sens, 0.4f, 5.0f);
+            if (_cameraController != null && Mathf.Abs(newSens - sens) > 0.01f)
+            {
+                _cameraController.mouseSensitivity = newSens;
+                PlayerPrefs.SetFloat("Dimari_MouseSens", newSens);
+            }
+            y += 48f;
+
+            bool isFp = _cameraController != null && _cameraController.isFirstPerson;
+            string camModeLabel = isFp ? "Режим камеры: От 1-го лица (Сменить)" : "Режим камеры: От 3-го лица (Сменить)";
+            if (DrawMenuButton(new Rect(startX + 8f, y, 400f, 38f), camModeLabel, 10))
+            {
+                if (_cameraController != null)
+                {
+                    _cameraController.isFirstPerson = !_cameraController.isFirstPerson;
+                    PlayerPrefs.SetInt("Dimari_FirstPerson", _cameraController.isFirstPerson ? 1 : 0);
+                }
+            }
+            y += 50f;
+
+            if (DrawMenuButton(new Rect(startX + 8f, y, 400f, 42f), "← НАЗАД В МЕНЮ", 11))
+            {
+                PlayerPrefs.Save();
+                _isSettingsOpen = false;
+            }
+        }
+
+        private void DrawKeyHint(float x, float y, string keyText, string actionText)
+        {
+            float keyW = Mathf.Max(30f, keyText.Length * 11f + 14f);
+            GUI.DrawTexture(new Rect(x, y, keyW, 24f), _keyCapTex);
+            GUI.Label(new Rect(x, y, keyW, 24f), $"<color=#111111><b>{keyText}</b></color>", _keyCapStyle);
+            GUI.Label(new Rect(x + keyW + 8f, y, 165f, 24f), $"<color=#F2F5F2><b>{actionText}</b></color>", _bottomBarTextStyle);
+        }
+
+        private void DrawToastIfActive()
+        {
+            if (_statusToastTimer <= 0f || string.IsNullOrEmpty(_statusToast)) return;
+
+            float w = 320f;
+            float h = 42f;
+            Rect r = new Rect(Screen.width - w - 32f, 32f, w, h);
+            GUI.DrawTexture(r, _subtitlePanelTex);
+            GUI.DrawTexture(new Rect(r.x, r.y, 4f, r.height), _goldAccentTex);
+            GUI.Label(
+                new Rect(r.x + 14f, r.y + 8f, r.width - 20f, 26f),
+                $"<color=#FFFFFF><b>{_statusToast}</b></color>",
+                _questActiveStyle
+            );
+        }
+
+        private void DrawChapter2TransitionOverlay()
+        {
+            float boxW = 660f;
+            float boxH = 165f;
+            float boxX = (Screen.width - boxW) * 0.5f;
+            float boxY = Screen.height * 0.22f;
+
+            GUI.DrawTexture(new Rect(boxX, boxY, boxW, boxH), _subtitlePanelTex);
+            GUI.DrawTexture(new Rect(boxX, boxY, boxW, 4f), _goldAccentTex);
+            GUI.Label(
+                new Rect(boxX, boxY + 24f, boxW, 44f),
+                "<color=#FFE066><size=26><b>ГЛАВА 1 ЗАВЕРШЕНА</b></size></color>",
+                _chapter2TitleStyle
+            );
+            GUI.Label(
+                new Rect(boxX + 24f, boxY + 74f, boxW - 48f, 68f),
+                "<color=#FFFFFF><b>Переход во 2-ю главу: «Городок Димарика, Рогово»\nВсе задачи в лесу выполнены!</b></color>",
+                _subtitleStyle
+            );
+        }
+    }
+}
