@@ -49,6 +49,11 @@ namespace Dimari.Story
         public Vector3 shipOffsetFromCliff = new Vector3(8f, 0f, 40f);
         public AudioClip shoutForHelpVoice;
         private InteractableStoryObject _cliffInteraction;
+        private Transform _endingApproachMarker;
+        private float _endingFade;
+        [Header("Метка перехода к обрыву")]
+        [Range(10f, 20f)] public float endingMarkerDistance = 15f;
+        [Min(0.5f)] public float endingMarkerRadius = 2f;
         [Tooltip("Назначьте полный префаб Sky Protective Suit (также для сборки игры).")]
         public GameObject captainPrefab;
         [Tooltip("Необязательно: путь к пустому CaptainHelmAnchor внутри префаба корабля. Ось Z — направление взгляда, начало — под ногами.")]
@@ -414,6 +419,17 @@ namespace Dimari.Story
             shoreInteract.inspectMonologue = "«Нужно идти к воде — возможно, там будет корабль. Постой-ка… Там у берега и правда стоит корабль!»";
             shoreInteract.interactionDistance = 3.8f;
             _cliffInteraction = cliffArrivalPoint != null ? shoreInteract : null;
+            if (cliffArrivalPoint != null)
+            {
+                GameObject marker = new GameObject("Dimari_CliffCutsceneApproachMarker");
+                marker.transform.SetParent(storyRoot.transform, true);
+                Vector3 approachForward = _player != null ? _player.transform.forward : Vector3.forward;
+                approachForward = Vector3.ProjectOnPlane(approachForward, Vector3.up).normalized;
+                marker.transform.position = GetGroundPoint(pPos + approachForward * endingMarkerDistance, pPos.y);
+                _endingApproachMarker = marker.transform;
+                // The cliff is a cinematic destination, not an interactable across the map.
+                shoreInteract.enabled = false;
+            }
         }
 
         /// <summary>
@@ -1199,9 +1215,9 @@ namespace Dimari.Story
 
         private void Update()
         {
-            if (_cliffInteraction != null && _player != null && _hasGameStarted &&
+            if (_cliffInteraction != null && _endingApproachMarker != null && _player != null && _hasGameStarted &&
                 !_isMenuOpen && !_isPlayingEndingCutscene && !_isChapter2Reached && _hasPickedUpTablet &&
-                Vector3.Distance(_player.transform.position, _cliffInteraction.transform.position) <= 6f)
+                Vector3.Distance(_player.transform.position, _endingApproachMarker.position) <= endingMarkerRadius)
             {
                 CompleteQuestStep("rogovo_exit", "");
             }
@@ -1775,6 +1791,17 @@ namespace Dimari.Story
                 _cameraController.UpdateCharacterMeshVisibility(false);
             }
 
+            // Conceal the relocation from the nearby marker to the authored cliff.
+            if (_endingApproachMarker != null)
+            {
+                float fadeTime = 0f;
+                while (fadeTime < 0.45f)
+                {
+                    fadeTime += Time.deltaTime;
+                    _endingFade = Mathf.Clamp01(fadeTime / 0.45f);
+                    yield return null;
+                }
+            }
             CacheCharacterBones();
 
             Vector3 walkStart = _shoreStartPoint != null
@@ -1797,6 +1824,21 @@ namespace Dimari.Story
             {
                 _player.transform.position = walkStart;
                 _player.transform.rotation = walkRot;
+            }
+
+            if (_endingApproachMarker != null && _mainCam != null)
+            {
+                Vector3 cameraPosition = walkStart - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
+                _mainCam.transform.position = cameraPosition;
+                _mainCam.transform.rotation = Quaternion.LookRotation(walkStart + walkDir * 3.5f + Vector3.up * 1.15f - cameraPosition);
+                float fadeTime = 0f;
+                while (fadeTime < 0.45f)
+                {
+                    fadeTime += Time.deltaTime;
+                    _endingFade = 1f - Mathf.Clamp01(fadeTime / 0.45f);
+                    yield return null;
+                }
+                _endingFade = 0f;
             }
 
             // Фраза 1: «Нужно идти к воде — возможно, там будет корабль.»
@@ -2292,6 +2334,24 @@ namespace Dimari.Story
             }
         }
 
+        private void DrawEndingApproachMarker()
+        {
+            if (_endingApproachMarker == null || _player == null || _mainCam == null ||
+                !_hasGameStarted || _isMenuOpen || !_hasPickedUpTablet || _isTabletViewerOpen ||
+                _isPlayingEndingCutscene || _isChapter2Reached) return;
+            Vector3 screen = _mainCam.WorldToScreenPoint(_endingApproachMarker.position + Vector3.up * 1.2f);
+            float distance = Vector3.Distance(_player.transform.position, _endingApproachMarker.position);
+            GUIStyle markerStyle = new GUIStyle(GUI.skin.box)
+            {
+                fontSize = 20, alignment = TextAnchor.MiddleCenter, richText = true
+            };
+            float x = screen.z > 0f ? Mathf.Clamp(screen.x, 150f, Screen.width - 150f) : Screen.width * 0.5f;
+            float y = screen.z > 0f ? Mathf.Clamp(Screen.height - screen.y, 100f, Screen.height - 100f) : Screen.height - 140f;
+            string hint = screen.z > 0f ? "◆ К ОБРЫВУ" : "Повернитесь к метке";
+            GUI.Box(new Rect(x - 140f, y - 35f, 280f, 70f),
+                $"<color=#FFE18A>{hint}</color>\n<color=#FFFFFF>{distance:0} м — подойдите</color>", markerStyle);
+        }
+
         private void OnGUI()
         {
             GUI.depth = -100;
@@ -2300,6 +2360,14 @@ namespace Dimari.Story
             GUI.backgroundColor = Color.white;
 
             EnsureStyles();
+            if (_endingFade > 0f)
+            {
+                GUI.color = new Color(0f, 0f, 0f, _endingFade);
+                GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), Texture2D.whiteTexture);
+                GUI.color = Color.white;
+                return;
+            }
+            DrawEndingApproachMarker();
 
             if (_isMenuOpen)
             {
