@@ -45,6 +45,16 @@ namespace Dimari.Story
         public bool humanSizedCaptain = true;
         public AudioClip heroCaptainQuestion;
         public AudioClip pirateCaptainAnswer;
+        [Header("Плавание к Рогово")]
+        public bool playSailingCutscene = true;
+        [Min(10f)] public float sailingDistance = 120f;
+        [Tooltip("Необязательно: конечная точка плавания в мировых координатах. Маршрут должен проходить по свободной воде.")]
+        public Transform sailingDestination;
+        private bool _isSailing;
+        private Vector3 _sailingStart;
+        private Vector3 _sailingEnd;
+        private float _sailingElapsed;
+        private const float SailingDuration = 78f;
         [Header("Финал у обрыва")]
         [Tooltip("Поставьте на безопасный край обрыва, Z направьте в море. Без маркера остаётся прежний финал у причала.")]
         public Transform cliffArrivalPoint;
@@ -1233,6 +1243,13 @@ namespace Dimari.Story
                 _statusToastTimer -= Time.unscaledDeltaTime;
             }
 
+            if (_isSailing && _shipTransform != null)
+            {
+                _sailingElapsed += Time.deltaTime;
+                _shipBasePos = Vector3.Lerp(_sailingStart, _sailingEnd,
+                    Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(_sailingElapsed / SailingDuration)));
+            }
+
             // Плавное покачивание корабля на волнах у причала
             if (_shipTransform != null)
             {
@@ -1945,6 +1962,8 @@ namespace Dimari.Story
 
             yield return PlayCaptainConversation();
 
+            if (playSailingCutscene) yield return PlaySailingToRogovo();
+
             if (cc != null) cc.enabled = true;
             if (_cameraController != null)
             {
@@ -2088,6 +2107,40 @@ namespace Dimari.Story
             yield return CaptainDialogueLine("Капитан: " + answer, pirateCaptainAnswer, 19f, true, meetingLocal);
         }
 
+        private IEnumerator PlaySailingToRogovo()
+        {
+            if (_shipTransform == null || _npcTransform == null || _player == null) yield break;
+            Vector3 heroLocal = _shipTransform.InverseTransformPoint(_player.transform.position);
+            _sailingStart = _shipBasePos;
+            Vector3 destination = sailingDestination != null ? sailingDestination.position
+                : _shipTransform.position + (_shoreStartPoint != null
+                    ? _shoreStartPoint.forward : _shipTransform.forward) * sailingDistance;
+            destination.y = _shipTransform.position.y;
+            _sailingEnd = _shipTransform.parent != null
+                ? _shipTransform.parent.InverseTransformPoint(destination) : destination;
+            _sailingElapsed = 0f;
+            _isSailing = true;
+            string[] lines =
+            {
+                "Капитан: Держись крепче, сухопутный! Курс на Рогово. Так кого ты там ищешь?",
+                "Герой: Димарика. Он работает в администрации в селе Рогово. Ездит на BMW третьей серии, 320d. Надеюсь, с ним всё в порядке.",
+                "Капитан: В администрации, говоришь? Значит, бумажные штормы ему знакомы! А как мне узнать твоего приятеля на берегу?",
+                "Герой: Включи Дору или Мэйби Бэйби — он наверняка узнает. А ещё он чертовски любит пиво и семечки. И мечтает купить Changan UNI-V, хотя у самого уже BMW.",
+                "Капитан: Ха! У каждого морского волка своя мечта. Мне бы парус без дыр, а ему новую сухопутную посудину! Только пиво до швартовки не открывать!",
+                "Герой: Договорились. Лишь бы найти его. Я до сих пор не понимаю, что случилось на острове. Доберёмся до Рогово — начну с администрации. Может, там знают, куда он пропал.",
+                "Капитан: Доберёмся, парень. Сперва порт, потом твоя администрация. А пока смотри на горизонт: море не любит, когда ему не доверяют."
+            };
+            for (int i = 0; i < lines.Length; i++)
+            {
+                AudioClip clip = Resources.Load<AudioClip>("Voice_Sailing_" + (i + 1));
+                yield return CaptainDialogueLine(lines[i], clip, Mathf.Max(5f, lines[i].Length / 13f),
+                    i % 2 == 0, heroLocal);
+            }
+            _isSailing = false;
+            // Keep the final world position; normal wave bobbing continues here.
+            _sailingStart = _shipBasePos;
+        }
+
         private IEnumerator CaptainDialogueLine(string subtitle, AudioClip clip, float fallbackDuration,
             bool captainSpeaking, Vector3 heroLocalPosition)
         {
@@ -2115,6 +2168,15 @@ namespace Dimari.Story
         private void FrameCaptainConversation(bool captainSpeaking)
         {
             if (_mainCam == null) return;
+            if (_isSailing)
+            {
+                float orbit = Mathf.Sin(_sailingElapsed * 0.07f);
+                Vector3 look = _shipTransform.position + Vector3.up * 5f;
+                Vector3 camera = _shipTransform.position + _shipTransform.right * (23f + orbit * 5f)
+                    - _shipTransform.forward * 18f + Vector3.up * 13f;
+                _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                return;
+            }
             Vector3 heroHead = _player.transform.position + Vector3.up * 1.5f;
             Vector3 captainHead = _npcTransform.position + Vector3.up * 1.5f;
             Vector3 direction = (captainHead - heroHead).normalized;
