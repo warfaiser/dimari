@@ -659,7 +659,7 @@ namespace Dimari.Story
                 new Vector3(0f, 0.051f, 0f), Quaternion.identity, new Vector3(0.34f, 0.008f, 0.23f), bezelMat);
 
             CreatePart(PrimitiveType.Cube, "TabletGlowScreen", parent,
-                new Vector3(0f, 0.055f, 0f), Quaternion.identity, new Vector3(0.31f, 0.006f, 0.20f), screenMat);
+                new Vector3(0f, 0.055f, 0f), Quaternion.Euler(0f, 180f, 0f), new Vector3(0.31f, 0.006f, 0.20f), screenMat);
         }
 
         private void CreateDetailedRogovoSignpost(Transform parent)
@@ -980,12 +980,12 @@ namespace Dimari.Story
 
             Vector3 chestPos = chest != null ? chest.position : (_player.transform.position + charUp * 1.24f);
 
-            // Точка центра планшета перед грудью персонажа
-            Vector3 tabletCenter = chestPos + charForward * 0.34f - charUp * 0.06f;
+            // Точка центра планшета повыше перед грудью персонажа (на удобном уровне чтения глазами)
+            Vector3 tabletCenter = chestPos + charForward * 0.36f + charUp * 0.06f;
 
             // Точки для локтей и кистей обеих рук (левая и правая грани планшета)
-            Vector3 leftElbowTarget = chestPos + charForward * 0.14f - charRight * 0.24f - charUp * 0.20f;
-            Vector3 rightElbowTarget = chestPos + charForward * 0.14f + charRight * 0.24f - charUp * 0.20f;
+            Vector3 leftElbowTarget = chestPos + charForward * 0.16f - charRight * 0.24f - charUp * 0.12f;
+            Vector3 rightElbowTarget = chestPos + charForward * 0.16f + charRight * 0.24f - charUp * 0.12f;
 
             Vector3 leftHandGrip = tabletCenter - charRight * 0.16f;
             Vector3 rightHandGrip = tabletCenter + charRight * 0.16f;
@@ -1087,35 +1087,40 @@ namespace Dimari.Story
             // 2. ПЛАНШЕТ В РУКАХ ПЕРЕД СОБОЙ
             if (_equippedTabletTransform != null)
             {
-                if (_isPlayingPickupAnim && _characterRightHandBone != null)
+                if (_isTabletViewerOpen)
+                {
+                    // Пока открыт крупный 2D-экран планшета по центру, прячем 3D-дубликат снизу, чтобы не было двух планшетов одновременно
+                    _equippedTabletTransform.gameObject.SetActive(false);
+                }
+                else if (_isPlayingPickupAnim && _characterRightHandBone != null)
                 {
                     _equippedTabletTransform.gameObject.SetActive(true);
                     _equippedTabletTransform.position = _characterRightHandBone.position + _player.transform.forward * 0.08f;
                     _equippedTabletTransform.rotation = Quaternion.LookRotation(_player.transform.forward, Vector3.up);
                 }
-                else if (_isHoldingTabletInHands || _isTabletViewerOpen)
+                else if (_isHoldingTabletInHands)
                 {
                     _equippedTabletTransform.gameObject.SetActive(true);
 
                     Vector3 charForward = _player.transform.forward;
                     Vector3 charUp = Vector3.up;
 
-                    // Размещаем 3D-планшет ровно посередине между левой и правой кистями персонажа!
+                    // Размещаем 3D-планшет ровно посередине между левой и правой кистями персонажа на уровне груди!
                     Vector3 handsCenter;
                     if (_characterLeftHandBone != null && _characterRightHandBone != null)
                     {
-                        handsCenter = (_characterLeftHandBone.position + _characterRightHandBone.position) * 0.5f + charForward * 0.03f;
+                        handsCenter = (_characterLeftHandBone.position + _characterRightHandBone.position) * 0.5f + charForward * 0.04f + charUp * 0.04f;
                     }
                     else
                     {
                         Vector3 chestPos = _characterChestBone != null
                             ? _characterChestBone.position
-                            : (_player.transform.position + charUp * 1.24f);
-                        handsCenter = chestPos + charForward * 0.34f - charUp * 0.06f;
+                            : (_player.transform.position + charUp * 1.28f);
+                        handsCenter = chestPos + charForward * 0.36f + charUp * 0.06f;
                     }
 
                     _equippedTabletTransform.position = handsCenter;
-                    // Экран планшета (+Y) наклонён на 42 градуса вверх и к лицу персонажа, чтобы он смотрел прямо в экран!
+                    // Экран планшета (+Y) повёрнут к лицу персонажа и строго головой вверх (без переворота вверх ногами!)
                     Vector3 tabletTopEdge = (charForward + charUp * 0.90f).normalized;
                     Vector3 tabletScreenNormal = (-charForward * 0.67f + charUp * 0.74f).normalized;
                     _equippedTabletTransform.rotation = Quaternion.LookRotation(tabletTopEdge, tabletScreenNormal);
@@ -1686,9 +1691,10 @@ namespace Dimari.Story
             }
 
             string tabHint = _hasPickedUpTablet ? "   [TAB] Экран планшета   [T] В руках / Убрать" : "";
-            GUI.DrawTexture(new Rect(24f, Screen.height - 42f, 720f, 30f), _darkPanelTex);
+            float bottomBarW = _hasPickedUpTablet ? 860f : 530f;
+            GUI.DrawTexture(new Rect(24f, Screen.height - 42f, bottomBarW, 30f), _darkPanelTex);
             GUI.Label(
-                new Rect(36f, Screen.height - 40f, 700f, 26f),
+                new Rect(36f, Screen.height - 40f, bottomBarW - 20f, 26f),
                 $"<color=#F0F4F0>[ESC] Меню / Пауза   [F5] Сохранить   [E] Поднять   [V] 1/3 лицо{tabHint}</color>",
                 _bottomBarTextStyle
             );
@@ -1730,7 +1736,7 @@ namespace Dimari.Story
                 );
             }
 
-            Rect closeBtnRect = new Rect(tabX + (tabW - 460f) * 0.5f, tabY + tabH - 50f, 460f, 38f);
+            Rect closeBtnRect = new Rect(tabX + (tabW - 560f) * 0.5f, tabY + tabH - 50f, 560f, 38f);
             GUI.DrawTexture(closeBtnRect, _buttonHoverBarTex);
             GUI.DrawTexture(new Rect(closeBtnRect.x, closeBtnRect.y, 4f, closeBtnRect.height), _goldAccentTex);
             GUI.Label(
