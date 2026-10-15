@@ -425,7 +425,9 @@ namespace Dimari.Story
                 marker.transform.SetParent(storyRoot.transform, true);
                 Vector3 approachForward = _player != null ? _player.transform.forward : Vector3.forward;
                 approachForward = Vector3.ProjectOnPlane(approachForward, Vector3.up).normalized;
-                marker.transform.position = GetGroundPoint(pPos + approachForward * endingMarkerDistance, pPos.y);
+                // Measure from the tablet's original ground position, not the player spawn.
+                marker.transform.position = GetGroundPoint(
+                    tabletPos + approachForward * endingMarkerDistance, tabletPos.y);
                 _endingApproachMarker = marker.transform;
                 // The cliff is a cinematic destination, not an interactable across the map.
                 shoreInteract.enabled = false;
