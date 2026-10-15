@@ -108,7 +108,12 @@ namespace Dimari.Story
             OpenMainMenuOnStartup();
         }
 
-        private void SetupDimariQuests()
+        public void InitializeDefaultQuests()
+        {
+            SetupDimariQuests();
+        }
+
+        public void SetupDimariQuests()
         {
             questHeader = "Текущие задачи:";
             questSteps.Clear();
@@ -138,7 +143,7 @@ namespace Dimari.Story
         /// 2) Планшет с треснутым светящимся экраном и картой,
         /// 3) Дорожный указатель перехода во 2-ю главу «Городок Димарика, Рогово».
         /// </summary>
-        private void RemoveStumpAndSpawnUpdatedStoryProps()
+        public void RemoveStumpAndSpawnUpdatedStoryProps()
         {
             // 1. Удаляем старый контейнер Dimari_StoryObjects (в котором был пень на круглой подставке)
             GameObject oldStoryRoot = GameObject.Find("Dimari_StoryObjects");

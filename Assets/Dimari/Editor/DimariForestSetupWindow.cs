@@ -924,18 +924,21 @@ namespace Dimari.EditorTools
                     foreach (string pkg in packages)
                     {
                         string lower = pkg.ToLowerInvariant();
-                        bool isAudioPack = lower.Contains("footstep") || lower.Contains("nature") ||
+                        bool isAudioOrPropPack = lower.Contains("footstep") || lower.Contains("nature") ||
                                            lower.Contains("nox_sound") || lower.Contains("nox sound") ||
                                            lower.Contains("ambient") || lower.Contains("ambiance") ||
                                            lower.Contains("sound") || lower.Contains("audio") ||
-                                           lower.Contains("bird") || lower.Contains("forest");
-                        if (isAudioPack)
+                                           lower.Contains("bird") || lower.Contains("forest") ||
+                                           lower.Contains("mixall") || lower.Contains("bags");
+                        if (isAudioOrPropPack)
                         {
                             // Пропускаем уже импортированные большие не-аудио пакеты
                             if (lower.Contains("toby") || lower.Contains("foliage") || lower.Contains("starter") || lower.Contains("basic motions"))
                                 continue;
 
+#pragma warning disable CS0618
                             AssetDatabase.ImportPackage(pkg, false);
+#pragma warning restore CS0618
                         }
                     }
                 }
