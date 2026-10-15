@@ -1,5 +1,7 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using Dimari.Core;
 using Dimari.Player;
@@ -14,9 +16,10 @@ namespace Dimari.Story
     ///    1. Найти рюкзак.
     ///    2. Найти планшет.
     ///    3. Дойти до точки перехода во 2-ю главу: «Городок Димарика, Рогово».
-    /// 2. Субтитрами в нижней части экрана (включая стартовый монолог пробуждения и осмотр предметов).
-    /// 3. Главным меню и меню паузы в стиле Dying Light: The Beast (живой лес на фоне, персонаж стоит справа).
-    /// 4. Автоматической подстановкой 3D-модели рюкзака из ассета «Bags - Props for Interior» (Mixall) с конвертацией материалов под URP.
+    /// 2. Анимацией поднятия предметов (наклон и захват рукой персонажа):
+    ///    - При поднятии рюкзака персонаж наклоняется, берёт рюкзак и надевает его себе на спину!
+    ///    - При поднятии планшета персонаж наклоняется, берёт планшет в руку и открывает на экране планшет с фотографией Димарика!
+    /// 3. Субтитрами в нижней части экрана и Главным меню / Паузой.
     /// </summary>
     public class StoryQuestManager : MonoBehaviour
     {
@@ -48,15 +51,33 @@ namespace Dimari.Story
         private bool _hasGameStarted = false;
         private bool _isChapter2Reached = false;
 
+        // Просмотр планшета с фотографией на экране
+        private bool _isTabletViewerOpen = false;
+        private bool _hasPickedUpTablet = false;
+        private bool _hasPickedUpBackpack = false;
+
+        // Состояние анимации поднятия предмета (рюкзака / планшета)
+        private bool _isPlayingPickupAnim = false;
+        private float _pickupAnimTimer = 0f;
+        private float _pickupAnimDuration = 1.25f;
+        private Vector3 _pickupTargetWorldPos;
+        private Transform _equippedBackpackTransform;
+        private Transform _equippedTabletTransform;
+        private Transform _characterChestBone;
+        private Transform _characterRightHandBone;
+        private Animator _characterAnimator;
+
         private string _statusToast = "";
         private float _statusToastTimer = 0f;
         private int _selectedMenuIndex = 0;
 
         private float _menuCamOrbitTimer = 0f;
 
-        // Текстуры для UI
+        // Текстуры для UI и экрана планшета
+        [NonSerialized] private Texture2D _tabletPhotoTex;
         [NonSerialized] private Texture2D _darkPanelTex;
         [NonSerialized] private Texture2D _subtitlePanelTex;
+        [NonSerialized] private Texture2D _tabletBezelTex;
         [NonSerialized] private Texture2D _menuLeftGradientTex;
         [NonSerialized] private Texture2D _buttonHoverBarTex;
         [NonSerialized] private Texture2D _accentBarTex;
@@ -64,7 +85,7 @@ namespace Dimari.Story
         [NonSerialized] private Texture2D _logoBoxTex;
         [NonSerialized] private Texture2D _keyCapTex;
 
-        // ВАЖНО: [NonSerialized], чтобы Unity не создавала пустые дефолтные GUIStyle (чёрный мелкий шрифт 12px)!
+        // Стили UI ([NonSerialized], чтобы Unity не сбрасывала их в чёрный 12px шрифт)
         [NonSerialized] private bool _stylesInitialized = false;
         [NonSerialized] private GUIStyle _logoMainStyle;
         [NonSerialized] private GUIStyle _menuBtnStyle;
@@ -98,14 +119,119 @@ namespace Dimari.Story
             _director = FindAnyObjectByType<ForestAwakeningDirector>();
             _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
 
-            // Принудительно обновляем список задач
+            CacheCharacterBones();
+            LoadTabletPhotoTexture();
             SetupDimariQuests();
-
-            // Убираем пень на подставке и спавним рюкзак из Bags - Props for Interior, планшет и указатель на Рогово
             RemoveStumpAndSpawnUpdatedStoryProps();
-
-            // Открываем главное меню при запуске
             OpenMainMenuOnStartup();
+        }
+
+        private void CacheCharacterBones()
+        {
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player == null) return;
+
+            _characterAnimator = _player.GetComponentInChildren<Animator>();
+            if (_characterAnimator != null && _characterAnimator.isHuman)
+            {
+                _characterChestBone = _characterAnimator.GetBoneTransform(HumanBodyBones.UpperChest);
+                if (_characterChestBone == null)
+                    _characterChestBone = _characterAnimator.GetBoneTransform(HumanBodyBones.Chest);
+                if (_characterChestBone == null)
+                    _characterChestBone = _characterAnimator.GetBoneTransform(HumanBodyBones.Spine);
+
+                _characterRightHandBone = _characterAnimator.GetBoneTransform(HumanBodyBones.RightHand);
+            }
+        }
+
+        /// <summary>
+        /// Загружает фотографию для экрана планшета:
+        /// 1) Из Resources/Dimari_Tablet_Photo
+        /// 2) Через AssetDatabase (в редакторе Unity)
+        /// 3) Напрямую с диска из корня репозитория (77_zgLAwtLG4SHdKxcYs440fepSvHjQnqD4DSeWPWR5bn5onw9wJ-JoYUQJVeecHzUhO8YtyfQXi5WTlK02S4-D-.jpg)
+        /// </summary>
+        private Texture2D LoadTabletPhotoTexture()
+        {
+            if (_tabletPhotoTex != null) return _tabletPhotoTex;
+
+            // 1. Попытка через Resources
+            _tabletPhotoTex = Resources.Load<Texture2D>("Dimari_Tablet_Photo");
+            if (_tabletPhotoTex != null) return _tabletPhotoTex;
+
+#if UNITY_EDITOR
+            // 2. Попытка через AssetDatabase по имени файла
+            string[] possibleAssetPaths = new string[]
+            {
+                "Assets/Dimari/Resources/Dimari_Tablet_Photo.jpg",
+                "Assets/77_zgLAwtLG4SHdKxcYs440fepSvHjQnqD4DSeWPWR5bn5onw9wJ-JoYUQJVeecHzUhO8YtyfQXi5WTlK02S4-D-.jpg"
+            };
+            foreach (string ap in possibleAssetPaths)
+            {
+                Texture2D loaded = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(ap);
+                if (loaded != null)
+                {
+                    _tabletPhotoTex = loaded;
+                    return _tabletPhotoTex;
+                }
+            }
+
+            string[] foundGuids = UnityEditor.AssetDatabase.FindAssets("77_zgLAwtLG4 t:Texture2D");
+            if (foundGuids != null && foundGuids.Length > 0)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(foundGuids[0]);
+                _tabletPhotoTex = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+                if (_tabletPhotoTex != null) return _tabletPhotoTex;
+            }
+#endif
+
+            // 3. Прямая загрузка байтов JPG из корня проекта или папки Assets
+            try
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+                string[] candidateFiles = new string[]
+                {
+                    Path.Combine(projectRoot, "77_zgLAwtLG4SHdKxcYs440fepSvHjQnqD4DSeWPWR5bn5onw9wJ-JoYUQJVeecHzUhO8YtyfQXi5WTlK02S4-D-.jpg"),
+                    Path.Combine(Application.dataPath, "Dimari", "Resources", "Dimari_Tablet_Photo.jpg"),
+                    Path.Combine(Application.dataPath, "77_zgLAwtLG4SHdKxcYs440fepSvHjQnqD4DSeWPWR5bn5onw9wJ-JoYUQJVeecHzUhO8YtyfQXi5WTlK02S4-D-.jpg")
+                };
+
+                string fileToLoad = null;
+                foreach (string f in candidateFiles)
+                {
+                    if (File.Exists(f))
+                    {
+                        fileToLoad = f;
+                        break;
+                    }
+                }
+
+                // Если переименован — ищем любой .jpg в корне проекта
+                if (fileToLoad == null)
+                {
+                    string[] rootJpgs = Directory.GetFiles(projectRoot, "*.jpg", SearchOption.TopDirectoryOnly);
+                    if (rootJpgs.Length > 0) fileToLoad = rootJpgs[0];
+                }
+
+                if (!string.IsNullOrEmpty(fileToLoad) && File.Exists(fileToLoad))
+                {
+                    byte[] bytes = File.ReadAllBytes(fileToLoad);
+                    Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                    if (ImageConversion.LoadImage(tex, bytes))
+                    {
+                        tex.name = "Dimari_Tablet_Photo_Runtime";
+                        tex.wrapMode = TextureWrapMode.Clamp;
+                        tex.filterMode = FilterMode.Bilinear;
+                        _tabletPhotoTex = tex;
+                        return _tabletPhotoTex;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[Dimari] Не удалось загрузить фото с диска: " + e.Message);
+            }
+
+            return _tabletPhotoTex;
         }
 
         public void InitializeDefaultQuests()
@@ -140,19 +266,37 @@ namespace Dimari.Story
         /// <summary>
         /// Удаляет старый пень на круглой подставке и создаёт 3 сюжетных объекта:
         /// 1) 3D-рюкзак из пакета «Bags - Props for Interior» (Mixall) или детализированный 3D-рюкзак,
-        /// 2) Планшет с треснутым светящимся экраном и картой,
+        /// 2) Планшет с фотографией пользователя на светящемся экране,
         /// 3) Дорожный указатель перехода во 2-ю главу «Городок Димарика, Рогово».
         /// </summary>
         public void RemoveStumpAndSpawnUpdatedStoryProps()
         {
-            // 1. Удаляем старый контейнер Dimari_StoryObjects (в котором был пень на круглой подставке)
+            // Если на спине игрока уже был прикреплён старый рюкзак — удаляем его перед пересозданием
+            if (_equippedBackpackTransform != null)
+            {
+                DestroyImmediate(_equippedBackpackTransform.gameObject);
+                _equippedBackpackTransform = null;
+            }
+            if (_equippedTabletTransform != null)
+            {
+                DestroyImmediate(_equippedTabletTransform.gameObject);
+                _equippedTabletTransform = null;
+            }
+            _hasPickedUpBackpack = false;
+            _hasPickedUpTablet = false;
+            _isTabletViewerOpen = false;
+
             GameObject oldStoryRoot = GameObject.Find("Dimari_StoryObjects");
             if (oldStoryRoot != null)
             {
                 DestroyImmediate(oldStoryRoot);
             }
+            GameObject oldStoryRootV2 = GameObject.Find("Dimari_StoryObjects_V2");
+            if (oldStoryRootV2 != null)
+            {
+                DestroyImmediate(oldStoryRootV2);
+            }
 
-            // 2. Дополнительно проверяем сцену на наличие любых объектов-пней на подставке (showcase / turntable stump)
             GameObject[] allObjects = FindObjectsByType<GameObject>();
             foreach (GameObject go in allObjects)
             {
@@ -180,8 +324,7 @@ namespace Dimari.Story
             GameObject storyRoot = new GameObject("Dimari_StoryObjects_V2");
 
             // =========================================================================
-            // 1. РЮКЗАК (Задача 1: Найти рюкзак)
-            // Ищем импортированный ассет «Bags - Props for Interior» (Mixall) или строим 3D-рюкзак
+            // 1. РЮКЗАК (Задача 1: Найти и поднять рюкзак)
             // =========================================================================
             Vector3 backpackPos = GetGroundPoint(pPos + forward * 4.5f + right * 1.4f, pPos.y);
             GameObject backpackObj = new GameObject("Quest1_Backpack");
@@ -195,18 +338,17 @@ namespace Dimari.Story
                 CreateDetailedProceduralBackpack(backpackObj.transform);
             }
 
-            // Небольшой коллайдер на корневом объекте, чтобы луч камеры и триггер взаимодействия всегда ловили рюкзак
             BoxCollider bagTriggerCol = backpackObj.AddComponent<BoxCollider>();
             bagTriggerCol.center = new Vector3(0f, 0.25f, 0f);
             bagTriggerCol.size = new Vector3(0.65f, 0.55f, 0.55f);
 
             InteractableStoryObject bagInteract = backpackObj.AddComponent<InteractableStoryObject>();
             bagInteract.questStepId = "find_backpack";
-            bagInteract.objectTitle = "Потерянный рюкзак";
-            bagInteract.inspectMonologue = "«Отлично, мой рюкзак! Внутри ключи и фляжка, но планшета тут нет — должно быть, он вылетел в траву чуть дальше по тропе.»";
+            bagInteract.objectTitle = "Потерянный рюкзак (Поднять)";
+            bagInteract.inspectMonologue = "«Отлично, мой рюкзак! Надену его на плечи. Внутри ключи и фляжка, но планшета тут нет — поищу его в траве дальше по тропе.»";
 
             // =========================================================================
-            // 2. ПЛАНШЕТ (Задача 2: Найти планшет)
+            // 2. ПЛАНШЕТ С ФОТОГРАФИЕЙ (Задача 2: Найти и поднять планшет)
             // =========================================================================
             Vector3 tabletPos = GetGroundPoint(pPos + forward * 9.5f - right * 2.1f, pPos.y);
             GameObject tabletObj = new GameObject("Quest2_Tablet");
@@ -222,8 +364,8 @@ namespace Dimari.Story
 
             InteractableStoryObject tabletInteract = tabletObj.AddComponent<InteractableStoryObject>();
             tabletInteract.questStepId = "find_tablet";
-            tabletInteract.objectTitle = "Разбитый планшет с картой";
-            tabletInteract.inspectMonologue = "«А вот и планшет! Экран треснул, но карта работает. Тропа впереди ведёт прямо в городок Димарика — Рогово. Пора выдвигаться.»";
+            tabletInteract.objectTitle = "Планшет Димарика (Поднять и включить)";
+            tabletInteract.inspectMonologue = "«А вот и планшет! На экране осталась наша вчерашняя фотка... И карта работает: тропа впереди ведёт прямо в городок Димарика — Рогово!»";
 
             // =========================================================================
             // 3. ТОЧКА ПЕРЕХОДА ВО 2-Ю ГЛАВУ: «Городок Димарика, Рогово»
@@ -242,10 +384,6 @@ namespace Dimari.Story
             rogovoInteract.interactionDistance = 3.2f;
         }
 
-        /// <summary>
-        /// Автоматически находит префаб или FBX рюкзака из скачанного ассета «Bags - Props for Interior» (Mixall),
-        /// спавнит его на траве и конвертирует его материалы из Standard (Unity 2018) в Universal Render Pipeline/Lit!
-        /// </summary>
         private bool TrySpawnMixallBagPrefab(Transform parent)
         {
 #if UNITY_EDITOR
@@ -269,7 +407,6 @@ namespace Dimari.Story
 
                     string lowerPath = path.ToLowerInvariant();
 
-                    // Игнорируем системные папки, деревья, персонажа и наши собственные скрипты
                     if (lowerPath.Contains("toby") ||
                         lowerPath.Contains("starterassets") ||
                         lowerPath.Contains("character controller") ||
@@ -287,7 +424,7 @@ namespace Dimari.Story
                         lowerPath.Contains("/bags/") ||
                         lowerPath.Contains("backpack") ||
                         lowerPath.Contains("rucksack") ||
-                        System.IO.Path.GetFileNameWithoutExtension(lowerPath).StartsWith("bag");
+                        Path.GetFileNameWithoutExtension(lowerPath).StartsWith("bag");
 
                     if (!isMixallBag) continue;
 
@@ -321,10 +458,7 @@ namespace Dimari.Story
                 instance.transform.localRotation = Quaternion.identity;
                 instance.transform.localScale = Vector3.one;
 
-                // Авто-конвертация материалов из Built-in Standard (Unity 2018) в URP Lit, чтобы рюкзак НЕ был розовым!
                 UpgradeRenderersToURP(instance, new Color(0.28f, 0.35f, 0.24f, 1f));
-
-                // Выравниваем размер рюкзака (~0.55м) и ставим его ровно на землю
                 NormalizeModelBoundsOnGround(instance.transform, 0.56f);
 
                 Debug.Log($"[Dimari] Загружен 3D-рюкзак из ассета: {chosenPath}");
@@ -336,8 +470,7 @@ namespace Dimari.Story
 
         private void UpgradeRenderersToURP(GameObject root, Color fallbackColor)
         {
-            Shader urpLit = Shader.Find("Universal Render Pipeline/Lit");
-            if (urpLit == null) urpLit = Shader.Find("Standard");
+            Shader urpLit = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
             if (urpLit == null) return;
 
             Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
@@ -357,7 +490,6 @@ namespace Dimari.Story
                     }
 
                     string shaderName = oldMat.shader != null ? oldMat.shader.name : "";
-                    // Если материал использует старый Built-in Standard или InternalErrorShader — переводим на URP Lit с сохранением текстур!
                     if (!shaderName.Contains("Universal Render Pipeline") && !shaderName.Contains("URP") && !shaderName.Contains("Toby"))
                     {
                         Texture mainTex = oldMat.HasProperty("_BaseMap") ? oldMat.GetTexture("_BaseMap") : null;
@@ -422,7 +554,6 @@ namespace Dimari.Story
                 float scaleFactor = targetSize / maxDim;
                 modelTransform.localScale *= scaleFactor;
 
-                // Пересчитываем Bounds после масштабирования
                 b = renderers[0].bounds;
                 for (int i = 1; i < renderers.Length; i++)
                 {
@@ -435,11 +566,6 @@ namespace Dimari.Story
             modelTransform.position += new Vector3(0f, offsetY, 0f);
         }
 
-        /// <summary>
-        /// Детализированный 3D-рюкзак из 12 частей (основной округлый корпус, верхний клапан, передний карман,
-        /// 2 боковых кармана, 2 плечевые лямки, ручка сверху и пряжки) — используется, если пользователь
-        /// ещё не нажал кнопку «Import» у пакета Bags - Props for Interior.
-        /// </summary>
         private void CreateDetailedProceduralBackpack(Transform parent)
         {
             Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
@@ -462,45 +588,29 @@ namespace Dimari.Story
 
             GameObject root = new GameObject("DetailedBackpack_Mesh");
             root.transform.SetParent(parent, false);
-            // Слегка наклонён на траве
             root.transform.localPosition = new Vector3(0f, 0.04f, 0f);
             root.transform.localRotation = Quaternion.Euler(18f, 0f, -8f);
 
-            // 1. Основной округлый корпус рюкзака
             CreatePart(PrimitiveType.Capsule, "MainPackBody", root.transform,
                 new Vector3(0f, 0.24f, 0f), Quaternion.identity, new Vector3(0.36f, 0.26f, 0.24f), oliveFabricMat);
-
-            // 2. Нижняя уплотнённая база рюкзака
             CreatePart(PrimitiveType.Cylinder, "PackBottomBase", root.transform,
                 new Vector3(0f, 0.09f, 0f), Quaternion.identity, new Vector3(0.35f, 0.06f, 0.23f), darkFlapMat);
-
-            // 3. Верхний клапан-крышка (капюшон рюкзака)
             CreatePart(PrimitiveType.Sphere, "TopHoodFlap", root.transform,
                 new Vector3(0f, 0.42f, 0.01f), Quaternion.Euler(10f, 0f, 0f), new Vector3(0.37f, 0.16f, 0.26f), darkFlapMat);
-
-            // 4. Внешний передний накладной карман
             CreatePart(PrimitiveType.Capsule, "FrontPocket", root.transform,
                 new Vector3(0f, 0.19f, 0.12f), Quaternion.identity, new Vector3(0.25f, 0.14f, 0.10f), darkFlapMat);
-
-            // 5. Левый и правый боковые карманы (под фляжку)
             CreatePart(PrimitiveType.Cylinder, "LeftSidePocket", root.transform,
                 new Vector3(-0.18f, 0.17f, 0f), Quaternion.Euler(0f, 0f, 8f), new Vector3(0.09f, 0.10f, 0.12f), darkFlapMat);
             CreatePart(PrimitiveType.Cylinder, "RightSidePocket", root.transform,
                 new Vector3(0.18f, 0.17f, 0f), Quaternion.Euler(0f, 0f, -8f), new Vector3(0.09f, 0.10f, 0.12f), darkFlapMat);
-
-            // 6. Кожаные ремни закрытия клапана спереди
             CreatePart(PrimitiveType.Cube, "LeftFrontStrap", root.transform,
                 new Vector3(-0.08f, 0.30f, 0.135f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.032f, 0.22f, 0.018f), strapLeatherMat);
             CreatePart(PrimitiveType.Cube, "RightFrontStrap", root.transform,
                 new Vector3(0.08f, 0.30f, 0.135f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.032f, 0.22f, 0.018f), strapLeatherMat);
-
-            // 7. Металлические пряжки на ремнях
             CreatePart(PrimitiveType.Cube, "LeftBuckle", root.transform,
                 new Vector3(-0.08f, 0.25f, 0.145f), Quaternion.identity, new Vector3(0.045f, 0.035f, 0.02f), buckleMetalMat);
             CreatePart(PrimitiveType.Cube, "RightBuckle", root.transform,
                 new Vector3(0.08f, 0.25f, 0.145f), Quaternion.identity, new Vector3(0.045f, 0.035f, 0.02f), buckleMetalMat);
-
-            // 8. Задние плечевые лямки и верхняя петля-ручка
             CreatePart(PrimitiveType.Capsule, "ShoulderStrapLeft", root.transform,
                 new Vector3(-0.09f, 0.25f, -0.12f), Quaternion.Euler(8f, 0f, 0f), new Vector3(0.055f, 0.18f, 0.04f), strapLeatherMat);
             CreatePart(PrimitiveType.Capsule, "ShoulderStrapRight", root.transform,
@@ -509,6 +619,9 @@ namespace Dimari.Story
                 new Vector3(0f, 0.49f, -0.04f), Quaternion.Euler(0f, 0f, 90f), new Vector3(0.03f, 0.06f, 0.03f), strapLeatherMat);
         }
 
+        /// <summary>
+        /// Создаёт 3D-планшет, на светящемся экране которого сразу отображается загруженная фотография пользователя!
+        /// </summary>
         private void CreateDetailedTabletModel(Transform parent)
         {
             Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
@@ -521,34 +634,40 @@ namespace Dimari.Story
             SetMatColor(bezelMat, new Color(0.05f, 0.05f, 0.06f, 1f));
             if (bezelMat.HasProperty("_Smoothness")) bezelMat.SetFloat("_Smoothness", 0.85f);
 
+            Texture2D photoTex = LoadTabletPhotoTexture();
+
             Material screenMat = new Material(litShader);
-            Color screenGlow = new Color(0.18f, 0.78f, 0.96f, 1f);
-            SetMatColor(screenMat, screenGlow);
-            if (screenMat.HasProperty("_EmissionColor"))
+            if (photoTex != null)
             {
-                screenMat.EnableKeyword("_EMISSION");
-                screenMat.SetColor("_EmissionColor", screenGlow * 1.4f);
+                SetMatColor(screenMat, Color.white);
+                if (screenMat.HasProperty("_BaseMap")) screenMat.SetTexture("_BaseMap", photoTex);
+                if (screenMat.HasProperty("_MainTex")) screenMat.SetTexture("_MainTex", photoTex);
+                if (screenMat.HasProperty("_EmissionColor"))
+                {
+                    screenMat.EnableKeyword("_EMISSION");
+                    if (screenMat.HasProperty("_EmissionMap")) screenMat.SetTexture("_EmissionMap", photoTex);
+                    screenMat.SetColor("_EmissionColor", new Color(0.85f, 0.85f, 0.85f, 1f));
+                }
+            }
+            else
+            {
+                Color screenGlow = new Color(0.18f, 0.78f, 0.96f, 1f);
+                SetMatColor(screenMat, screenGlow);
+                if (screenMat.HasProperty("_EmissionColor"))
+                {
+                    screenMat.EnableKeyword("_EMISSION");
+                    screenMat.SetColor("_EmissionColor", screenGlow * 1.4f);
+                }
             }
 
-            Material routeLineMat = new Material(litShader);
-            Color routeColor = new Color(1.0f, 0.82f, 0.25f, 1f);
-            SetMatColor(routeLineMat, routeColor);
-
-            // Алюминиевый корпус планшета
             CreatePart(PrimitiveType.Cube, "TabletChassis", parent,
                 new Vector3(0f, 0.05f, 0f), Quaternion.Euler(8f, 0f, -5f), new Vector3(0.38f, 0.022f, 0.26f), bodyMat);
 
-            // Чёрная стеклянная рамка
             CreatePart(PrimitiveType.Cube, "TabletBezel", parent,
                 new Vector3(0f, 0.062f, 0f), Quaternion.Euler(8f, 0f, -5f), new Vector3(0.36f, 0.008f, 0.24f), bezelMat);
 
-            // Светящийся экран с GPS-картой
             CreatePart(PrimitiveType.Cube, "TabletGlowScreen", parent,
-                new Vector3(0f, 0.066f, 0f), Quaternion.Euler(8f, 0f, -5f), new Vector3(0.32f, 0.006f, 0.20f), screenMat);
-
-            // Жёлтая линия маршрута до Рогово на экране
-            CreatePart(PrimitiveType.Cube, "MapRouteLine", parent,
-                new Vector3(0.01f, 0.070f, 0.01f), Quaternion.Euler(8f, 28f, -5f), new Vector3(0.18f, 0.004f, 0.016f), routeLineMat);
+                new Vector3(0f, 0.066f, 0f), Quaternion.Euler(8f, 0f, -5f), new Vector3(0.33f, 0.006f, 0.21f), screenMat);
         }
 
         private void CreateDetailedRogovoSignpost(Transform parent)
@@ -568,7 +687,6 @@ namespace Dimari.Story
             CreatePart(PrimitiveType.Cube, "SignBoard", parent,
                 new Vector3(0.18f, 1.50f, 0f), Quaternion.identity, new Vector3(0.85f, 0.24f, 0.06f), signBoardMat);
 
-            // 3D-надпись «РОГОВО ->» прямо на деревянном указателе
             GameObject textObj = new GameObject("SignText_Rogovo");
             textObj.transform.SetParent(parent, false);
             textObj.transform.localPosition = new Vector3(0.18f, 1.52f, -0.036f);
@@ -647,10 +765,29 @@ namespace Dimari.Story
                     _director.enabled = false;
                 }
             }
+            else if (_isTabletViewerOpen)
+            {
+                // Пока открыт экран планшета — разблокируем мышь и ждём закрытия по [E], [TAB] или [Пробел]
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+
+                if (DimariInput.IsInteractPressed() || DimariInput.IsSkipOrContinuePressed() || IsTabPressed())
+                {
+                    CloseTabletViewer();
+                }
+            }
+            else if (_hasPickedUpTablet && IsTabPressed())
+            {
+                OpenTabletViewer();
+            }
 
             if (DimariInput.IsPauseMenuPressed())
             {
-                if (_isSettingsOpen)
+                if (_isTabletViewerOpen)
+                {
+                    CloseTabletViewer();
+                }
+                else if (_isSettingsOpen)
                 {
                     _isSettingsOpen = false;
                 }
@@ -674,7 +811,6 @@ namespace Dimari.Story
                 _isSettingsOpen = !_isSettingsOpen;
             }
 
-            // Плавное затухание субтитров
             if (_subtitleTimer > 0f)
             {
                 _subtitleTimer -= Time.deltaTime;
@@ -686,18 +822,59 @@ namespace Dimari.Story
             }
         }
 
+        private bool IsTabPressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Keyboard.current != null &&
+                UnityEngine.InputSystem.Keyboard.current.tabKey.wasPressedThisFrame)
+            {
+                return true;
+            }
+#endif
+            return Input.GetKeyDown(KeyCode.Tab) || Input.GetKeyDown(KeyCode.T);
+        }
+
+        public void OpenTabletViewer()
+        {
+            _isTabletViewerOpen = true;
+            if (_player != null) _player.IsControlEnabled = false;
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+
+        public void CloseTabletViewer()
+        {
+            _isTabletViewerOpen = false;
+            if (!_isMenuOpen)
+            {
+                if (_player != null) _player.IsControlEnabled = true;
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+            }
+        }
+
         private void LateUpdate()
         {
-            // Когда открыто Главное Меню или Пауза — ставим камеру так, чтобы
-            // ПЕРСОНАЖ ГАРАНТИРОВАННО СТОЯЛ В ПРАВОЙ ЧАСТИ ЭКРАНА (а не слева поверх кнопок!),
-            // а за ним качались на ветру деревья леса!
-            if (!_isMenuOpen) return;
+            // 1. В режиме игры обновляем:
+            //    а) Процедурную скелетную анимацию поднятия предмета (наклон корпуса, сгиб коленей и движение руки к предмету)
+            //    б) Положение надетого рюкзака на спине персонажа
+            if (!_isMenuOpen)
+            {
+                if (_isPlayingPickupAnim)
+                {
+                    ApplyHumanoidPickupPose();
+                }
 
+                UpdateEquippedItemsOnCharacter();
+                return;
+            }
+
+            // 2. Когда открыто Главное Меню или Пауза — ставим камеру так, чтобы
+            //    ПЕРСОНАЖ СТОЯЛ В ПРАВОЙ ЧАСТИ ЭКРАНА, а за ним качались деревья леса!
             if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
             if (_mainCam == null) _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
             if (_player == null || _mainCam == null) return;
 
-            // Персонаж стоит ровно вертикально
             if (_player.visualModelRoot != null)
             {
                 _player.visualModelRoot.localPosition = Vector3.zero;
@@ -720,24 +897,207 @@ namespace Dimari.Story
             if (pForward.sqrMagnitude < 0.01f) pForward = Vector3.forward;
             pForward.Normalize();
 
-            // Камера стоит спереди от персонажа и смотрит на него
             Vector3 camPos = pPos + pForward * 2.65f + Vector3.up * (1.28f + swayY) + _player.transform.right * swayX;
             Vector3 characterChest = pPos + Vector3.up * 1.18f;
 
-            // Сначала направляем камеру прямо на грудь персонажа, а затем поворачиваем камеру ВЛЕВО на -20 градусов:
-            // когда камера поворачивается влево, персонаж в кадре смещается ВПРАВО (на правую половину экрана, ~72% по X)!
             Quaternion lookDirect = Quaternion.LookRotation(characterChest - camPos, Vector3.up);
             Quaternion lookWithCharacterOnRight = lookDirect * Quaternion.Euler(0f, -20f, 0f);
 
             _mainCam.transform.position = camPos;
             _mainCam.transform.rotation = lookWithCharacterOnRight;
 
-            // Математическая проверка через WorldToViewportPoint: если вдруг персонаж оказался левее центра (x < 0.5),
-            // зеркалим угол поворота, чтобы персонаж 100% ВСЕГДА стоял СПРАВА экрана!
             Vector3 vp = _mainCam.WorldToViewportPoint(characterChest);
             if (vp.x < 0.5f)
             {
                 _mainCam.transform.rotation = lookDirect * Quaternion.Euler(0f, +20f, 0f);
+            }
+        }
+
+        /// <summary>
+        /// Плавная 3D-анимация наклона персонажа и захвата предмета правой рукой (работает поверх любого Humanoid-рига в LateUpdate).
+        /// </summary>
+        private void ApplyHumanoidPickupPose()
+        {
+            if (_player == null) return;
+            if (_characterAnimator == null) CacheCharacterBones();
+            if (_characterAnimator == null || !_characterAnimator.isHuman) return;
+
+            float norm = Mathf.Clamp01(_pickupAnimTimer / _pickupAnimDuration);
+            // Плавный колокол 0 -> 1 -> 0 (пик наклона и захвата рукой на 45% времени)
+            float bendWeight = Mathf.Sin(norm * Mathf.PI);
+            bendWeight = Mathf.SmoothStep(0f, 1f, bendWeight);
+
+            Vector3 charRight = _player.transform.right;
+            Vector3 charForward = _player.transform.forward;
+
+            Transform hips = _characterAnimator.GetBoneTransform(HumanBodyBones.Hips);
+            Transform spine = _characterAnimator.GetBoneTransform(HumanBodyBones.Spine);
+            Transform chest = _characterAnimator.GetBoneTransform(HumanBodyBones.Chest);
+            Transform upperChest = _characterAnimator.GetBoneTransform(HumanBodyBones.UpperChest);
+            Transform neck = _characterAnimator.GetBoneTransform(HumanBodyBones.Neck);
+            Transform rShoulder = _characterAnimator.GetBoneTransform(HumanBodyBones.RightShoulder);
+            Transform rUpperArm = _characterAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+            Transform rLowerArm = _characterAnimator.GetBoneTransform(HumanBodyBones.RightLowerArm);
+            Transform lUpperLeg = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftUpperLeg);
+            Transform lLowerLeg = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftLowerLeg);
+            Transform rUpperLeg = _characterAnimator.GetBoneTransform(HumanBodyBones.RightUpperLeg);
+            Transform rLowerLeg = _characterAnimator.GetBoneTransform(HumanBodyBones.RightLowerLeg);
+
+            // Приседание таза вниз и сгиб коленей
+            if (hips != null)
+            {
+                hips.position += Vector3.down * (0.26f * bendWeight);
+            }
+            if (lUpperLeg != null) lUpperLeg.rotation = Quaternion.AngleAxis(-34f * bendWeight, charRight) * lUpperLeg.rotation;
+            if (rUpperLeg != null) rUpperLeg.rotation = Quaternion.AngleAxis(-38f * bendWeight, charRight) * rUpperLeg.rotation;
+            if (lLowerLeg != null) lLowerLeg.rotation = Quaternion.AngleAxis(62f * bendWeight, charRight) * lLowerLeg.rotation;
+            if (rLowerLeg != null) rLowerLeg.rotation = Quaternion.AngleAxis(66f * bendWeight, charRight) * rLowerLeg.rotation;
+
+            // Наклон спины и груди вперёд к предмету на траве
+            if (spine != null) spine.rotation = Quaternion.AngleAxis(34f * bendWeight, charRight) * spine.rotation;
+            if (chest != null) chest.rotation = Quaternion.AngleAxis(26f * bendWeight, charRight) * chest.rotation;
+            if (upperChest != null) upperChest.rotation = Quaternion.AngleAxis(16f * bendWeight, charRight) * upperChest.rotation;
+            if (neck != null) neck.rotation = Quaternion.AngleAxis(18f * bendWeight, charRight) * neck.rotation;
+
+            // Протягивание правой руки вниз к предмету
+            if (rShoulder != null) rShoulder.rotation = Quaternion.AngleAxis(15f * bendWeight, charRight) * rShoulder.rotation;
+            if (rUpperArm != null)
+            {
+                rUpperArm.rotation = Quaternion.AngleAxis(-52f * bendWeight, charRight) *
+                                     Quaternion.AngleAxis(-18f * bendWeight, charForward) *
+                                     rUpperArm.rotation;
+            }
+            if (rLowerArm != null)
+            {
+                rLowerArm.rotation = Quaternion.AngleAxis(-28f * bendWeight, charRight) * rLowerArm.rotation;
+            }
+        }
+
+        /// <summary>
+        /// Держит поднятый рюкзак ровно за спиной персонажа, а планшет — в правой руке во время подъёма.
+        /// </summary>
+        private void UpdateEquippedItemsOnCharacter()
+        {
+            if (_player == null) return;
+            if (_characterChestBone == null) CacheCharacterBones();
+
+            if (_equippedBackpackTransform != null)
+            {
+                Transform anchor = _characterChestBone != null ? _characterChestBone : _player.transform;
+                Vector3 backForward = anchor.forward;
+                backForward.y = 0f;
+                if (backForward.sqrMagnitude < 0.01f) backForward = _player.transform.forward;
+                backForward.Normalize();
+
+                Vector3 chestPos = _characterChestBone != null
+                    ? _characterChestBone.position
+                    : (_player.transform.position + Vector3.up * 1.22f);
+
+                _equippedBackpackTransform.position = chestPos - backForward * 0.22f - Vector3.up * 0.16f;
+                _equippedBackpackTransform.rotation = Quaternion.LookRotation(-backForward, Vector3.up);
+            }
+
+            if (_equippedTabletTransform != null && _characterRightHandBone != null)
+            {
+                if (_isPlayingPickupAnim || _isTabletViewerOpen)
+                {
+                    _equippedTabletTransform.gameObject.SetActive(true);
+                    _equippedTabletTransform.position = _characterRightHandBone.position + _player.transform.forward * 0.10f;
+                    _equippedTabletTransform.rotation = Quaternion.LookRotation(_player.transform.forward, Vector3.up) * Quaternion.Euler(45f, 0f, 0f);
+                }
+                else
+                {
+                    // Когда планшет убран — прячем его в рюкзак (вызов по клавише TAB)
+                    _equippedTabletTransform.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        private IEnumerator PlayPickupItemRoutine(string stepId, InteractableStoryObject targetInteractable)
+        {
+            _isPlayingPickupAnim = true;
+            _pickupAnimTimer = 0f;
+            _interactionPrompt = "";
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+
+            bool wasFirstPerson = _cameraController != null && _cameraController.isFirstPerson;
+            // На время поднятия предмета включаем отображение модели персонажа, чтобы было видно саму анимацию подъёма!
+            if (_cameraController != null)
+            {
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+
+            Transform itemTransform = targetInteractable != null ? targetInteractable.transform : null;
+            if (itemTransform != null)
+            {
+                _pickupTargetWorldPos = itemTransform.position;
+
+                // Отключаем коллайдер и скрипт взаимодействия, чтобы предмет больше не мешал ходьбе
+                Collider[] cols = itemTransform.GetComponentsInChildren<Collider>(true);
+                foreach (Collider c in cols) c.enabled = false;
+                targetInteractable.enabled = false;
+            }
+
+            Vector3 startForward = _player != null ? _player.transform.forward : Vector3.forward;
+            Vector3 toItem = itemTransform != null && _player != null
+                ? (itemTransform.position - _player.transform.position)
+                : startForward;
+            toItem.y = 0f;
+            Quaternion targetRot = toItem.sqrMagnitude > 0.01f
+                ? Quaternion.LookRotation(toItem.normalized, Vector3.up)
+                : (_player != null ? _player.transform.rotation : Quaternion.identity);
+
+            bool attachedToHandOrBack = false;
+
+            while (_pickupAnimTimer < _pickupAnimDuration)
+            {
+                _pickupAnimTimer += Time.deltaTime;
+                float norm = Mathf.Clamp01(_pickupAnimTimer / _pickupAnimDuration);
+
+                // Плавно поворачиваем персонажа лицом к поднимаемому предмету
+                if (_player != null && norm < 0.45f)
+                {
+                    _player.transform.rotation = Quaternion.Slerp(_player.transform.rotation, targetRot, Time.deltaTime * 10f);
+                }
+
+                // В нижней точке наклона (45%) рука касается предмета — поднимаем его с земли!
+                if (!attachedToHandOrBack && norm >= 0.45f && itemTransform != null)
+                {
+                    attachedToHandOrBack = true;
+                    CacheCharacterBones();
+
+                    if (stepId == "find_backpack")
+                    {
+                        _hasPickedUpBackpack = true;
+                        _equippedBackpackTransform = itemTransform;
+                        _equippedBackpackTransform.localScale *= 0.78f;
+                        ShowStatusToast("Рюкзак поднят и надет на спину!");
+                    }
+                    else if (stepId == "find_tablet")
+                    {
+                        _hasPickedUpTablet = true;
+                        _equippedTabletTransform = itemTransform;
+                        _equippedTabletTransform.localScale *= 0.75f;
+                        ShowStatusToast("Планшет поднят! ([TAB] — открыть экран)");
+                    }
+                }
+
+                yield return null;
+            }
+
+            _isPlayingPickupAnim = false;
+
+            if (_cameraController != null && wasFirstPerson)
+            {
+                _cameraController.UpdateCharacterMeshVisibility(true);
+            }
+
+            // Когда подняли планшет — сразу открываем перед игроком экран планшета с фотографией!
+            if (stepId == "find_tablet")
+            {
+                OpenTabletViewer();
             }
         }
 
@@ -747,6 +1107,7 @@ namespace Dimari.Story
             _isSettingsOpen = false;
             _hasGameStarted = false;
             _showHUD = false;
+            _isTabletViewerOpen = false;
             Time.timeScale = 1.0f;
 
             Cursor.lockState = CursorLockMode.None;
@@ -830,11 +1191,13 @@ namespace Dimari.Story
         {
             _isMenuOpen = false;
             _isSettingsOpen = false;
+            _isTabletViewerOpen = false;
             _hasGameStarted = true;
             _isChapter2Reached = false;
             Time.timeScale = 1.0f;
 
             SetupDimariQuests();
+            RemoveStumpAndSpawnUpdatedStoryProps();
 
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
@@ -971,9 +1334,25 @@ namespace Dimari.Story
                 }
             }
 
+            // Находим объект в сцене и запускаем анимацию поднятия предмета (для рюкзака и планшета)
+            if (stepId == "find_backpack" || stepId == "find_tablet")
+            {
+                InteractableStoryObject targetObj = null;
+                InteractableStoryObject[] allInteractables = FindObjectsByType<InteractableStoryObject>();
+                foreach (InteractableStoryObject iso in allInteractables)
+                {
+                    if (iso != null && iso.questStepId == stepId)
+                    {
+                        targetObj = iso;
+                        break;
+                    }
+                }
+                StartCoroutine(PlayPickupItemRoutine(stepId, targetObj));
+            }
+
             if (!string.IsNullOrEmpty(monologueText))
             {
-                ShowMonologue(monologueText, 7.0f);
+                ShowMonologue(monologueText, 7.5f);
             }
 
             if (ProceduralForestAudio.Instance != null)
@@ -1024,6 +1403,13 @@ namespace Dimari.Story
                 _subtitlePanelTex.Apply();
             }
 
+            if (_tabletBezelTex == null)
+            {
+                _tabletBezelTex = new Texture2D(1, 1);
+                _tabletBezelTex.SetPixel(0, 0, new Color(0.08f, 0.09f, 0.11f, 0.98f));
+                _tabletBezelTex.Apply();
+            }
+
             if (_menuLeftGradientTex == null)
             {
                 int w = 128;
@@ -1032,7 +1418,6 @@ namespace Dimari.Story
                 for (int x = 0; x < w; x++)
                 {
                     float norm = (float)x / (w - 1);
-                    // Лёгкий полупрозрачный градиент только под левыми кнопками, без глухого чёрного фона!
                     float alpha = Mathf.Pow(1f - norm, 2.0f) * 0.68f;
                     _menuLeftGradientTex.SetPixel(x, 0, new Color(0.04f, 0.05f, 0.06f, alpha));
                 }
@@ -1103,7 +1488,6 @@ namespace Dimari.Story
 
         private void OnGUI()
         {
-            // Поверх любых оверлеев кат-сцены, чтобы субтитры и интерфейс ВСЕГДА были яркими и читаемыми!
             GUI.depth = -100;
             GUI.color = Color.white;
             GUI.contentColor = Color.white;
@@ -1125,14 +1509,18 @@ namespace Dimari.Story
                 DrawChapter2TransitionOverlay();
             }
 
-            // СУБТИТРЫ ОЗВУЧКИ И МОНОЛОГОВ ВНИЗУ ЭКРАНА
-            DrawSubtitlesBar();
+            // Если открыт планшет — рисуем экран планшета с фотографией!
+            if (_isTabletViewerOpen)
+            {
+                DrawTabletPhotoViewerOverlay();
+            }
 
+            DrawSubtitlesBar();
             DrawToastIfActive();
 
             if (!_showHUD) return;
 
-            // КВЕСТ-ЛОГ В ЛЕВОМ ВЕРХНЕМ УГЛУ (белый и золотой текст!)
+            // КВЕСТ-ЛОГ В ЛЕВОМ ВЕРХНЕМ УГЛУ
             float panelX = 24f;
             float panelY = 24f;
             float panelW = 460f;
@@ -1168,33 +1556,94 @@ namespace Dimari.Story
                 curY += 36f;
             }
 
-            // Прицельная точка по центру экрана
-            float centerX = Screen.width * 0.5f;
-            float centerY = Screen.height * 0.5f;
-            GUI.DrawTexture(new Rect(centerX - 2f, centerY - 2f, 4f, 4f), _accentBarTex);
-
-            // Подсказка взаимодействия [E] по центру экрана (ярко-жёлтый текст на тёмной плашке)
-            if (!string.IsNullOrEmpty(_interactionPrompt))
+            if (!_isTabletViewerOpen)
             {
-                float pW = 500f;
-                float pH = 44f;
-                Rect pRect = new Rect(centerX - pW * 0.5f, centerY + 32f, pW, pH);
-                GUI.DrawTexture(pRect, _subtitlePanelTex);
-                GUI.DrawTexture(new Rect(pRect.x, pRect.y, pRect.width, 2f), _goldAccentTex);
+                float centerX = Screen.width * 0.5f;
+                float centerY = Screen.height * 0.5f;
+                GUI.DrawTexture(new Rect(centerX - 2f, centerY - 2f, 4f, 4f), _accentBarTex);
+
+                if (!string.IsNullOrEmpty(_interactionPrompt))
+                {
+                    float pW = 500f;
+                    float pH = 44f;
+                    Rect pRect = new Rect(centerX - pW * 0.5f, centerY + 32f, pW, pH);
+                    GUI.DrawTexture(pRect, _subtitlePanelTex);
+                    GUI.DrawTexture(new Rect(pRect.x, pRect.y, pRect.width, 2f), _goldAccentTex);
+                    GUI.Label(
+                        pRect,
+                        $"<color=#FFE875><b>{_interactionPrompt}</b></color>",
+                        _promptStyle
+                    );
+                }
+            }
+
+            string tabHint = _hasPickedUpTablet ? "   [TAB] Планшет" : "";
+            GUI.DrawTexture(new Rect(24f, Screen.height - 42f, 620f, 30f), _darkPanelTex);
+            GUI.Label(
+                new Rect(36f, Screen.height - 40f, 600f, 26f),
+                $"<color=#F0F4F0>[ESC] Меню / Пауза   [F5] Сохранить   [E] Поднять / Осмотреть   [V] 1/3 лицо{tabHint}</color>",
+                _bottomBarTextStyle
+            );
+        }
+
+        /// <summary>
+        /// Рисует открытый планшет перед игроком с загруженной фотографией!
+        /// </summary>
+        private void DrawTabletPhotoViewerOverlay()
+        {
+            float w = Screen.width;
+            float h = Screen.height;
+
+            // Корпус планшета по центру экрана
+            float tabW = Mathf.Min(820f, w - 100f);
+            float tabH = Mathf.Min(560f, h - 150f);
+            float tabX = (w - tabW) * 0.5f;
+            float tabY = (h - tabH) * 0.45f;
+
+            // Внешняя металлическая кромка и чёрная стеклянная рамка планшета
+            GUI.DrawTexture(new Rect(tabX - 6f, tabY - 6f, tabW + 12f, tabH + 12f), _goldAccentTex);
+            GUI.DrawTexture(new Rect(tabX, tabY, tabW, tabH), _tabletBezelTex);
+
+            // Верхний статус-бар планшета
+            GUI.Label(
+                new Rect(tabX + 24f, tabY + 12f, tabW - 48f, 26f),
+                "<color=#FFDB6B><b>ПЛАНШЕТ ДИМАРИКА  •  ГАЛЕРЕЯ: ПОСЛЕДНЕЕ ФОТО  •  GPS: РОГОВО (16 М →)</b></color>",
+                _questHeaderStyle
+            );
+
+            // Экран с фотографией
+            Rect screenRect = new Rect(tabX + 24f, tabY + 44f, tabW - 48f, tabH - 104f);
+            GUI.DrawTexture(screenRect, _darkPanelTex);
+
+            Texture2D photo = LoadTabletPhotoTexture();
+            if (photo != null)
+            {
+                GUI.DrawTexture(screenRect, photo, ScaleMode.ScaleToFit, false);
+            }
+            else
+            {
                 GUI.Label(
-                    pRect,
-                    $"<color=#FFE875><b>{_interactionPrompt}</b></color>",
-                    _promptStyle
+                    screenRect,
+                    "<color=#FFFFFF><b>Фотография загружается...</b></color>",
+                    _subtitleStyle
                 );
             }
 
-            // Нижняя строка управления
-            GUI.DrawTexture(new Rect(24f, Screen.height - 42f, 520f, 30f), _darkPanelTex);
+            // Кнопка закрытия планшета внизу рамки
+            Rect closeBtnRect = new Rect(tabX + (tabW - 440f) * 0.5f, tabY + tabH - 50f, 440f, 38f);
+            GUI.DrawTexture(closeBtnRect, _buttonHoverBarTex);
+            GUI.DrawTexture(new Rect(closeBtnRect.x, closeBtnRect.y, 4f, closeBtnRect.height), _goldAccentTex);
             GUI.Label(
-                new Rect(36f, Screen.height - 40f, 500f, 26f),
-                "<color=#F0F4F0>[ESC] Меню / Пауза   [F5] Сохранить   [E] Осмотреть   [V] 1/3 лицо</color>",
-                _bottomBarTextStyle
+                closeBtnRect,
+                "<color=#FFE875><b>[E] / [TAB] / [КЛИК] УБРАТЬ ПЛАНШЕТ И ИДТИ ДАЛЬШЕ</b></color>",
+                _promptStyle
             );
+
+            if (Event.current.type == EventType.MouseDown && closeBtnRect.Contains(Event.current.mousePosition))
+            {
+                Event.current.Use();
+                CloseTabletViewer();
+            }
         }
 
         private void DrawSubtitlesBar()
@@ -1235,11 +1684,8 @@ namespace Dimari.Story
             float w = Screen.width;
             float h = Screen.height;
 
-            // 1. Полупрозрачный мягкий градиент только под левой колонкой меню (0..38%),
-            //    справа полностью чистый экран с живым лесом и главным героем!
             GUI.DrawTexture(new Rect(0f, 0f, w * 0.38f, h), _menuLeftGradientTex);
 
-            // 2. Логотип «ПОИСКИ ДИМАРИКА» крупно по центру белой плашки в одну строку
             float logoX = 64f;
             float logoY = 72f;
             float logoW = 395f;
@@ -1271,14 +1717,12 @@ namespace Dimari.Story
                     row++;
                 }
 
-                // 1. НАЧАТЬ НОВУЮ ИГРУ
                 if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "НАЧАТЬ НОВУЮ ИГРУ", row))
                 {
                     StartNewGame();
                 }
                 row++;
 
-                // 2. СОХРАНИТЬ ИГРУ / ЗАГРУЗИТЬ СОХРАНЕНИЕ
                 if (_hasGameStarted)
                 {
                     if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "СОХРАНИТЬ ИГРУ", row))
@@ -1304,14 +1748,12 @@ namespace Dimari.Story
                     row++;
                 }
 
-                // 3. НАСТРОЙКИ
                 if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "НАСТРОЙКИ", row))
                 {
                     _isSettingsOpen = true;
                 }
                 row++;
 
-                // 4. ВЫХОД
                 if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "ВЫХОД", row))
                 {
 #if UNITY_EDITOR
@@ -1326,7 +1768,6 @@ namespace Dimari.Story
                 DrawSettingsPanel(64f, 185f);
             }
 
-            // Нижняя строка подсказок (белый чёткий текст)
             float bottomY = h - 52f;
             DrawKeyHint(64f, bottomY, "ESC", _isSettingsOpen ? "Назад" : (_hasGameStarted ? "В игру" : "Выход"));
             DrawKeyHint(195f, bottomY, "F5", "Быстрое сохранение");
@@ -1334,7 +1775,7 @@ namespace Dimari.Story
 
             GUI.Label(
                 new Rect(w - 140f, bottomY, 125f, 26f),
-                "<color=#E8ECE8><b>ВЕР. 1.3.0</b></color>",
+                "<color=#E8ECE8><b>ВЕР. 1.4.0</b></color>",
                 _bottomBarTextStyle
             );
         }
@@ -1470,7 +1911,7 @@ namespace Dimari.Story
         {
             if (_statusToastTimer <= 0f || string.IsNullOrEmpty(_statusToast)) return;
 
-            float w = 320f;
+            float w = 360f;
             float h = 42f;
             Rect r = new Rect(Screen.width - w - 32f, 32f, w, h);
             GUI.DrawTexture(r, _subtitlePanelTex);
