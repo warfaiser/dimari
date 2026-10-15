@@ -15,11 +15,11 @@ namespace Dimari.Story
     /// 1. Списком текущих задач в левом верхнем углу экрана («Текущие задачи:»):
     ///    1. Найти рюкзак.
     ///    2. Найти планшет.
-    ///    3. Дойти до точки перехода во 2-ю главу: «Городок Димарика, Рогово».
-    /// 2. Анимацией поднятия предметов (точные векторы костей через FromToRotation):
-    ///    - При поднятии рюкзака персонаж наклоняется, берёт рюкзак рукой и надевает его себе на спину!
-    ///    - При поднятии планшета персонаж наклоняется, берёт планшет и ДЕРЖИТ ЕГО ПЕРЕД СОБОЙ ДВУМЯ РУКАМИ (левая и правая кисти держат края 3D-планшета перед грудью), а на экране светится загруженная фотография!
-    /// 3. Субтитрами в нижней части экрана и Главным меню / Паузой.
+    ///    3. Выйти к воде и найти корабль (Глава 2: «Городок Димарика, Рогово»).
+    /// 2. Анимацией поднятия предметов (рюкзак на спину, планшет в руки с фотографией).
+    /// 3. Финальной кинематографичной КАТ-СЦЕНОЙ С АНИМАЦИЕЙ ХОДЬБЫ:
+    ///    Герой произносит: «Нужно идти к воде — возможно, там будет корабль»,
+    ///    сам идёт шагом (с 3D-анимацией ходьбы) к берегу/причалу у воды и видит качающийся на воде КОРАБЛЬ и стоящего у корабля ПЕРСОНАЖА!
     /// </summary>
     public class StoryQuestManager : MonoBehaviour
     {
@@ -50,6 +50,7 @@ namespace Dimari.Story
         private bool _isSettingsOpen = false;
         private bool _hasGameStarted = false;
         private bool _isChapter2Reached = false;
+        private bool _isPlayingEndingCutscene = false;
 
         // Состояние планшета и рюкзака
         private bool _isTabletViewerOpen = false;
@@ -69,6 +70,14 @@ namespace Dimari.Story
         private Transform _characterLeftHandBone;
         private Transform _characterRightHandBone;
         private Animator _characterAnimator;
+
+        // Объекты финала у воды: берег/причал, 3D-корабль на воде и NPC-капитан
+        private Transform _shoreStartPoint;
+        private Transform _pierWalkEndPoint;
+        private Transform _shipTransform;
+        private Transform _npcTransform;
+        private Vector3 _shipBasePos;
+        private Quaternion _shipBaseRot;
 
         private string _statusToast = "";
         private float _statusToastTimer = 0f;
@@ -148,12 +157,6 @@ namespace Dimari.Story
             }
         }
 
-        /// <summary>
-        /// Загружает фотографию для экрана планшета:
-        /// 1) Из Resources/Dimari_Tablet_Photo
-        /// 2) Через AssetDatabase (в редакторе Unity)
-        /// 3) Напрямую с диска из корня репозитория (77_zgLAwtLG4SHdKxcYs440fepSvHjQnqD4DSeWPWR5bn5onw9wJ-JoYUQJVeecHzUhO8YtyfQXi5WTlK02S4-D-.jpg)
-        /// </summary>
         private Texture2D LoadTabletPhotoTexture()
         {
             if (_tabletPhotoTex != null) return _tabletPhotoTex;
@@ -258,7 +261,7 @@ namespace Dimari.Story
             questSteps.Add(new QuestStep
             {
                 id = "rogovo_exit",
-                title = "3. Дойти до точки перехода во 2-ю главу: «Городок Димарика, Рогово».",
+                title = "3. Выйти к воде и найти корабль (Глава 2).",
                 isCompleted = false
             });
         }
@@ -280,6 +283,7 @@ namespace Dimari.Story
             _isHoldingTabletInHands = false;
             _holdTabletBlend = 0f;
             _isTabletViewerOpen = false;
+            _isPlayingEndingCutscene = false;
 
             GameObject oldStoryRoot = GameObject.Find("Dimari_StoryObjects");
             if (oldStoryRoot != null)
@@ -340,10 +344,10 @@ namespace Dimari.Story
             InteractableStoryObject bagInteract = backpackObj.AddComponent<InteractableStoryObject>();
             bagInteract.questStepId = "find_backpack";
             bagInteract.objectTitle = "Потерянный рюкзак (Поднять)";
-            bagInteract.inspectMonologue = "«Отлично, мой рюкзак! Надену его на плечи. Внутри ключи и фляжка, но планшета тут нет — поищу его в траве дальше по тропе.»";
+            bagInteract.inspectMonologue = "«Отлично, мой рюкзак! Надену его на плечи. Внутри ключи и фляжка, но планшета тут нет — поищу его в траве дальше.»";
 
             // =========================================================================
-            // 2. ПЛАНШЕТ С ФОТОГРАФИЕЙ (Задача 2: Найти и взять планшет в руки)
+            // 2. ПЛАНШЕТ С ФОТОГРАФИЕЙ (Задача 2: Найти и взять планшет)
             // =========================================================================
             Vector3 tabletPos = GetGroundPoint(pPos + forward * 9.5f - right * 2.1f, pPos.y);
             GameObject tabletObj = new GameObject("Quest2_Tablet");
@@ -360,34 +364,383 @@ namespace Dimari.Story
             InteractableStoryObject tabletInteract = tabletObj.AddComponent<InteractableStoryObject>();
             tabletInteract.questStepId = "find_tablet";
             tabletInteract.objectTitle = "Планшет Димарика (Взять в руки)";
-            tabletInteract.inspectMonologue = "«А вот и планшет! На экране осталась наша вчерашняя фотка... И карта работает: тропа впереди ведёт прямо в городок Димарика — Рогово!»";
+            tabletInteract.inspectMonologue = "«А вот и планшет! На экране осталась наша вчерашняя фотка... Нужно идти к воде — возможно, там будет корабль.»";
 
             // =========================================================================
-            // 3. ТОЧКА ПЕРЕХОДА ВО 2-Ю ГЛАВУ: «Городок Димарика, Рогово»
+            // 3. ВЫХОД К ВОДЕ, ПРИЧАЛ, КОРАБЛЬ И NPC-ПЕРСОНАЖ (Задача 3 + Кат-сцена)
             // =========================================================================
-            Vector3 rogovoPos = GetGroundPoint(pPos + forward * 16.0f, pPos.y);
-            GameObject rogovoObj = new GameObject("Quest3_RogovoTransition");
-            rogovoObj.transform.SetParent(storyRoot.transform);
-            rogovoObj.transform.position = rogovoPos;
+            Vector3 shorePos = GetGroundPoint(pPos + forward * 15.5f, pPos.y);
+            GameObject shoreEventRoot = new GameObject("Quest3_ShoreAndShip");
+            shoreEventRoot.transform.SetParent(storyRoot.transform);
+            shoreEventRoot.transform.position = shorePos;
+            shoreEventRoot.transform.rotation = Quaternion.LookRotation(forward, Vector3.up);
 
-            CreateDetailedRogovoSignpost(rogovoObj.transform);
+            CreateShorelinePierShipAndNpc(shoreEventRoot.transform, shorePos, forward, right);
 
-            InteractableStoryObject rogovoInteract = rogovoObj.AddComponent<InteractableStoryObject>();
-            rogovoInteract.questStepId = "rogovo_exit";
-            rogovoInteract.objectTitle = "Дорожный указатель: «Городок Димарика, Рогово» (Глава 2)";
-            rogovoInteract.inspectMonologue = "«Впереди уже виднеются крыши Рогово. Держись, Димарик, я скоро разберусь, что вчера произошло.»";
-            rogovoInteract.interactionDistance = 3.2f;
+            InteractableStoryObject shoreInteract = shoreEventRoot.AddComponent<InteractableStoryObject>();
+            shoreInteract.questStepId = "rogovo_exit";
+            shoreInteract.objectTitle = "Выход к воде (Подойти к кораблю)";
+            shoreInteract.inspectMonologue = "«Нужно идти к воде — возможно, там будет корабль. Постой-ка… Там у берега и правда стоит корабль!»";
+            shoreInteract.interactionDistance = 3.8f;
+        }
+
+        /// <summary>
+        /// Создаёт береговой деревянный пирс у воды, водную гладь залива,
+        /// большой 3D-корабль (из Asset Store или сборный 3D-корабль) и NPC-персонажа на причале у корабля!
+        /// </summary>
+        private void CreateShorelinePierShipAndNpc(Transform root, Vector3 shorePos, Vector3 forward, Vector3 right)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material woodMat = new Material(litShader);
+            SetMatColor(woodMat, new Color(0.36f, 0.24f, 0.14f, 1f));
+            if (woodMat.HasProperty("_Smoothness")) woodMat.SetFloat("_Smoothness", 0.2f);
+
+            Material darkWoodMat = new Material(litShader);
+            SetMatColor(darkWoodMat, new Color(0.24f, 0.15f, 0.09f, 1f));
+
+            Material waterMat = new Material(litShader);
+            SetMatColor(waterMat, new Color(0.08f, 0.32f, 0.42f, 0.94f));
+            if (waterMat.HasProperty("_Smoothness")) waterMat.SetFloat("_Smoothness", 0.92f);
+            if (waterMat.HasProperty("_Metallic")) waterMat.SetFloat("_Metallic", 0.15f);
+
+            // Точка начала и конца прохода героя в кат-сцене
+            GameObject startPt = new GameObject("CutsceneWalkStart");
+            startPt.transform.SetParent(root, false);
+            startPt.transform.localPosition = new Vector3(0f, 0f, -0.5f);
+            _shoreStartPoint = startPt.transform;
+
+            GameObject endPt = new GameObject("CutsceneWalkEnd");
+            endPt.transform.SetParent(root, false);
+            endPt.transform.localPosition = new Vector3(0f, 0.18f, 5.2f);
+            _pierWalkEndPoint = endPt.transform;
+
+            // 1. Деревянный причал (мостик к воде, по которому идёт герой в кат-сцене)
+            GameObject pierRoot = new GameObject("WoodenShorePier");
+            pierRoot.transform.SetParent(root, false);
+
+            // Настил причала (длина 7 метров) с коллайдером, чтобы персонаж шёл по нему!
+            GameObject pierDeck = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            pierDeck.name = "PierWalkwayDeck";
+            pierDeck.transform.SetParent(pierRoot.transform, false);
+            pierDeck.transform.localPosition = new Vector3(0f, 0.12f, 3.2f);
+            pierDeck.transform.localScale = new Vector3(2.2f, 0.16f, 7.0f);
+            pierDeck.GetComponent<Renderer>().sharedMaterial = woodMat;
+
+            // Сваи причала
+            for (int i = 0; i < 4; i++)
+            {
+                float z = 0.6f + i * 1.8f;
+                CreatePart(PrimitiveType.Cylinder, $"PierPost_L_{i}", pierRoot.transform,
+                    new Vector3(-1.05f, 0.25f, z), Quaternion.identity, new Vector3(0.16f, 0.85f, 0.16f), darkWoodMat);
+                CreatePart(PrimitiveType.Cylinder, $"PierPost_R_{i}", pierRoot.transform,
+                    new Vector3(1.05f, 0.25f, z), Quaternion.identity, new Vector3(0.16f, 0.85f, 0.16f), darkWoodMat);
+            }
+
+            // Фонарный столб у входа на причал
+            CreatePart(PrimitiveType.Cylinder, "LanternPost", pierRoot.transform,
+                new Vector3(-1.15f, 1.15f, 0.4f), Quaternion.identity, new Vector3(0.10f, 1.15f, 0.10f), darkWoodMat);
+
+            Material lanternGlowMat = new Material(litShader);
+            Color warmLight = new Color(1.0f, 0.82f, 0.38f, 1f);
+            SetMatColor(lanternGlowMat, warmLight);
+            if (lanternGlowMat.HasProperty("_EmissionColor"))
+            {
+                lanternGlowMat.EnableKeyword("_EMISSION");
+                lanternGlowMat.SetColor("_EmissionColor", warmLight * 2.5f);
+            }
+            CreatePart(PrimitiveType.Sphere, "PierLanternBulb", pierRoot.transform,
+                new Vector3(-1.15f, 2.35f, 0.4f), Quaternion.identity, new Vector3(0.28f, 0.28f, 0.28f), lanternGlowMat);
+
+            // 2. Зеркальная водная гладь перед причалом (под кораблём)
+            CreatePart(PrimitiveType.Cube, "ShoreWaterBay", root,
+                new Vector3(0f, -0.22f, 19.0f), Quaternion.identity, new Vector3(46f, 0.15f, 30f), waterMat);
+
+            // 3. 3D-КОРАБЛЬ НА ВОДЕ У ПРИЧАЛА
+            GameObject shipObj = new GameObject("Dimari_WaterShip");
+            shipObj.transform.SetParent(root, false);
+            shipObj.transform.localPosition = new Vector3(1.2f, -0.05f, 12.2f);
+            shipObj.transform.localRotation = Quaternion.Euler(0f, -68f, 0f);
+
+            bool spawnedAssetShip = TrySpawnAssetStoreShipPrefab(shipObj.transform);
+            if (!spawnedAssetShip)
+            {
+                CreateDetailedProceduralShip(shipObj.transform);
+            }
+
+            _shipTransform = shipObj.transform;
+            _shipBasePos = _shipTransform.localPosition;
+            _shipBaseRot = _shipTransform.localRotation;
+
+            // 4. NPC-ПЕРСОНАЖ (Капитан / Проводник), ожидающий у трапа корабля на конце причала
+            GameObject npcObj = new GameObject("Dimari_ShipCaptain_NPC");
+            npcObj.transform.SetParent(root, false);
+            npcObj.transform.localPosition = new Vector3(0.55f, 0.20f, 6.2f);
+            npcObj.transform.localRotation = Quaternion.Euler(0f, 195f, 0f);
+
+            SpawnNpcCharacterAtShip(npcObj.transform);
+            _npcTransform = npcObj.transform;
+
+            BoxCollider triggerCol = root.gameObject.AddComponent<BoxCollider>();
+            triggerCol.center = new Vector3(0f, 1.0f, 0.5f);
+            triggerCol.size = new Vector3(2.8f, 2.2f, 2.8f);
+        }
+
+        /// <summary>
+        /// Автоматически ищет импортированный пользователем 3D-корабль или лодку из Unity Asset Store
+        /// (например: Boats Pack, Stylized Pirate Ship, Sailing Ships, Simple Boats and Tankers).
+        /// </summary>
+        private bool TrySpawnAssetStoreShipPrefab(Transform parent)
+        {
+#if UNITY_EDITOR
+            string[] filters = new string[] { "t:Prefab", "t:Model" };
+            GameObject bestShip = null;
+            string bestPath = null;
+            int bestScore = -1;
+
+            foreach (string filter in filters)
+            {
+                string[] guids = UnityEditor.AssetDatabase.FindAssets(filter);
+                foreach (string guid in guids)
+                {
+                    string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(path)) continue;
+                    string lower = path.ToLowerInvariant();
+
+                    if (lower.Contains("toby") || lower.Contains("starterassets") ||
+                        lower.Contains("character controller") || lower.Contains("human basic") ||
+                        lower.Contains("mixall") || lower.Contains("bags"))
+                    {
+                        continue;
+                    }
+
+                    bool isShipOrBoat =
+                        lower.Contains("ship") ||
+                        lower.Contains("boat") ||
+                        lower.Contains("vessel") ||
+                        lower.Contains("sailboat") ||
+                        lower.Contains("pirate") ||
+                        lower.Contains("cruiser") ||
+                        lower.Contains("tanker") ||
+                        lower.Contains("yacht") ||
+                        lower.Contains("galleon");
+
+                    if (!isShipOrBoat) continue;
+
+                    GameObject candidate = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    if (candidate == null) continue;
+                    if (candidate.GetComponentInChildren<MeshRenderer>() == null) continue;
+
+                    int score = 10;
+                    if (lower.EndsWith(".prefab")) score += 40;
+                    if (lower.Contains("ship")) score += 30;
+                    if (lower.Contains("boat")) score += 20;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestShip = candidate;
+                        bestPath = path;
+                    }
+                }
+            }
+
+            if (bestShip != null)
+            {
+                GameObject instance = Instantiate(bestShip, parent);
+                instance.name = "AssetStore_Ship_Model";
+                instance.transform.localPosition = Vector3.zero;
+                instance.transform.localRotation = Quaternion.identity;
+                instance.transform.localScale = Vector3.one;
+
+                UpgradeRenderersToURP(instance, new Color(0.35f, 0.24f, 0.16f, 1f));
+                NormalizeModelBoundsOnGround(instance.transform, 8.5f);
+
+                Debug.Log($"[Dimari] Загружен 3D-корабль из ассета: {bestPath}");
+                return true;
+            }
+#endif
+            return false;
+        }
+
+        /// <summary>
+        /// Строит детализированный 3D-корабль на воде (корпус, палуба, борта, рубка капитана со светящимися иллюминаторами,
+        /// мачта с парусом, труба и спасательные круги), если внешний ассет корабля ещё не импортирован.
+        /// </summary>
+        private void CreateDetailedProceduralShip(Transform parent)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material hullDarkMat = new Material(litShader);
+            SetMatColor(hullDarkMat, new Color(0.18f, 0.12f, 0.08f, 1f));
+            if (hullDarkMat.HasProperty("_Smoothness")) hullDarkMat.SetFloat("_Smoothness", 0.30f);
+
+            Material hullRedBottomMat = new Material(litShader);
+            SetMatColor(hullRedBottomMat, new Color(0.45f, 0.14f, 0.11f, 1f));
+
+            Material deckWoodMat = new Material(litShader);
+            SetMatColor(deckWoodMat, new Color(0.46f, 0.32f, 0.19f, 1f));
+
+            Material cabinWhiteMat = new Material(litShader);
+            SetMatColor(cabinWhiteMat, new Color(0.86f, 0.84f, 0.78f, 1f));
+
+            Material sailCanvasMat = new Material(litShader);
+            SetMatColor(sailCanvasMat, new Color(0.92f, 0.89f, 0.81f, 1f));
+
+            Material windowGlowMat = new Material(litShader);
+            Color warmGlow = new Color(1.0f, 0.84f, 0.42f, 1f);
+            SetMatColor(windowGlowMat, warmGlow);
+            if (windowGlowMat.HasProperty("_EmissionColor"))
+            {
+                windowGlowMat.EnableKeyword("_EMISSION");
+                windowGlowMat.SetColor("_EmissionColor", warmGlow * 2.2f);
+            }
+
+            // 1. Нижняя подводная часть корпуса (киль)
+            CreatePart(PrimitiveType.Capsule, "ShipKeelHull", parent,
+                new Vector3(0f, 0.15f, 0f), Quaternion.Euler(90f, 0f, 0f), new Vector3(2.6f, 4.4f, 0.9f), hullRedBottomMat);
+
+            // 2. Основной надводный корпус корабля
+            CreatePart(PrimitiveType.Cube, "ShipMainHull", parent,
+                new Vector3(0f, 0.65f, 0f), Quaternion.identity, new Vector3(2.7f, 0.85f, 6.8f), hullDarkMat);
+
+            // 3. Заострённый нос корабля (форштевень) и корма
+            CreatePart(PrimitiveType.Cube, "ShipBowFront", parent,
+                new Vector3(0f, 0.72f, 3.6f), Quaternion.Euler(0f, 45f, 0f), new Vector3(1.9f, 0.85f, 1.9f), hullDarkMat);
+
+            // 4. Деревянная палуба
+            CreatePart(PrimitiveType.Cube, "ShipWoodDeck", parent,
+                new Vector3(0f, 1.10f, 0.1f), Quaternion.identity, new Vector3(2.55f, 0.08f, 6.6f), deckWoodMat);
+
+            // 5. Бортики / фальшборт по краям палубы
+            CreatePart(PrimitiveType.Cube, "PortRail", parent,
+                new Vector3(-1.28f, 1.32f, 0f), Quaternion.identity, new Vector3(0.08f, 0.38f, 6.4f), hullDarkMat);
+            CreatePart(PrimitiveType.Cube, "StarboardRail", parent,
+                new Vector3(1.28f, 1.32f, 0f), Quaternion.identity, new Vector3(0.08f, 0.38f, 6.4f), hullDarkMat);
+
+            // 6. Капитанская рубка / каюта
+            CreatePart(PrimitiveType.Cube, "CaptainCabin", parent,
+                new Vector3(0f, 1.75f, -0.9f), Quaternion.identity, new Vector3(1.85f, 1.25f, 2.4f), cabinWhiteMat);
+            CreatePart(PrimitiveType.Cube, "CabinRoof", parent,
+                new Vector3(0f, 2.42f, -0.9f), Quaternion.identity, new Vector3(2.05f, 0.12f, 2.6f), hullDarkMat);
+
+            // Светящиеся окна капитанской рубки
+            CreatePart(PrimitiveType.Cube, "CabinFrontWindow", parent,
+                new Vector3(0f, 1.95f, 0.31f), Quaternion.identity, new Vector3(1.35f, 0.42f, 0.04f), windowGlowMat);
+            CreatePart(PrimitiveType.Cube, "CabinSideWindowL", parent,
+                new Vector3(-0.93f, 1.92f, -0.8f), Quaternion.identity, new Vector3(0.04f, 0.38f, 1.4f), windowGlowMat);
+            CreatePart(PrimitiveType.Cube, "CabinSideWindowR", parent,
+                new Vector3(0.93f, 1.92f, -0.8f), Quaternion.identity, new Vector3(0.04f, 0.38f, 1.4f), windowGlowMat);
+
+            // 7. Высокая мачта, рея и парус
+            CreatePart(PrimitiveType.Cylinder, "MainMast", parent,
+                new Vector3(0f, 3.4f, 1.35f), Quaternion.identity, new Vector3(0.14f, 2.3f, 0.14f), deckWoodMat);
+            CreatePart(PrimitiveType.Cylinder, "CrossYardTop", parent,
+                new Vector3(0f, 4.8f, 1.35f), Quaternion.Euler(0f, 0f, 90f), new Vector3(0.09f, 1.6f, 0.09f), deckWoodMat);
+            CreatePart(PrimitiveType.Cube, "MainSailCanvas", parent,
+                new Vector3(0f, 3.65f, 1.45f), Quaternion.Euler(6f, 0f, 0f), new Vector3(2.8f, 2.1f, 0.06f), sailCanvasMat);
+
+            // 8. Пароходная труба позади рубки
+            CreatePart(PrimitiveType.Cylinder, "SmokeFunnel", parent,
+                new Vector3(0f, 2.95f, -1.55f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.36f, 0.65f, 0.36f), hullRedBottomMat);
+        }
+
+        /// <summary>
+        /// Спавнит 3D-персонажа (NPC-капитана / выжившего) у корабля:
+        /// Сначала ищет любого нового персонажа, скачанного с Asset Store, иначе использует модель персонажа с анимацией дыхания Idle.
+        /// </summary>
+        private void SpawnNpcCharacterAtShip(Transform parent)
+        {
+#if UNITY_EDITOR
+            GameObject bestCharPrefab = null;
+            int bestScore = -1;
+
+            string[] guids = UnityEditor.AssetDatabase.FindAssets("t:Prefab");
+            foreach (string guid in guids)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path)) continue;
+                string lower = path.ToLowerInvariant();
+
+                if (lower.Contains("toby") || lower.Contains("mixall") || lower.Contains("bags")) continue;
+
+                // Ищем сторонних 3D-персонажей или модели людей
+                bool isExternalChar =
+                    lower.Contains("modular character") ||
+                    lower.Contains("human_male") ||
+                    lower.Contains("rpg character") ||
+                    lower.Contains("chuby") ||
+                    lower.Contains("protective_suit") ||
+                    lower.Contains("didimo") ||
+                    lower.Contains("villager") ||
+                    lower.Contains("npc") ||
+                    lower.Contains("playerarmature");
+
+                if (!isExternalChar) continue;
+
+                GameObject candidate = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                if (candidate == null) continue;
+                if (candidate.GetComponentInChildren<SkinnedMeshRenderer>() == null) continue;
+
+                int score = 10;
+                // Приоритет отдаём новому скачанному человеческому персонажу (не дефолтному PlayerArmature)
+                if (!lower.Contains("playerarmature") && !lower.Contains("starterassets"))
+                {
+                    score += 80;
+                }
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestCharPrefab = candidate;
+                }
+            }
+
+            if (bestCharPrefab != null)
+            {
+                GameObject npcInstance = Instantiate(bestCharPrefab, parent);
+                npcInstance.name = "ShipCaptain_Character";
+                npcInstance.transform.localPosition = Vector3.zero;
+                npcInstance.transform.localRotation = Quaternion.identity;
+                npcInstance.transform.localScale = Vector3.one;
+
+                // Отключаем на NPC любые контроллеры управления игроком, чтобы он спокойно стоял на пирсе
+                MonoBehaviour[] scripts = npcInstance.GetComponentsInChildren<MonoBehaviour>(true);
+                foreach (MonoBehaviour mb in scripts)
+                {
+                    if (mb == null) continue;
+                    string typeName = mb.GetType().Name;
+                    if (typeName.Contains("Player") || typeName.Contains("Controller") || typeName.Contains("Input"))
+                    {
+                        mb.enabled = false;
+                    }
+                }
+
+                UpgradeRenderersToURP(npcInstance, new Color(0.22f, 0.30f, 0.38f, 1f));
+
+                // Если у игрока есть AnimatorController — назначаем его и NPC, чтобы он дышал в стойке Idle
+                Animator npcAnim = npcInstance.GetComponentInChildren<Animator>();
+                if (npcAnim != null && _characterAnimator != null && _characterAnimator.runtimeAnimatorController != null)
+                {
+                    npcAnim.runtimeAnimatorController = _characterAnimator.runtimeAnimatorController;
+                }
+                return;
+            }
+#endif
+            // Запасной силуэт капитана в плаще у фонаря, если префаб не найден
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            Material coatMat = new Material(litShader);
+            SetMatColor(coatMat, new Color(0.16f, 0.22f, 0.28f, 1f));
+            CreatePart(PrimitiveType.Capsule, "NpcBody", parent,
+                new Vector3(0f, 0.9f, 0f), Quaternion.identity, new Vector3(0.45f, 0.85f, 0.35f), coatMat);
+            CreatePart(PrimitiveType.Sphere, "NpcHead", parent,
+                new Vector3(0f, 1.65f, 0f), Quaternion.identity, new Vector3(0.28f, 0.28f, 0.28f), coatMat);
         }
 
         private bool TrySpawnMixallBagPrefab(Transform parent)
         {
 #if UNITY_EDITOR
-            string[] searchFilters = new string[]
-            {
-                "t:Prefab",
-                "t:Model"
-            };
-
+            string[] searchFilters = new string[] { "t:Prefab", "t:Model" };
             GameObject chosenBagAsset = null;
             string chosenPath = null;
             int bestScore = -1;
@@ -399,7 +752,6 @@ namespace Dimari.Story
                 {
                     string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
                     if (string.IsNullOrEmpty(path)) continue;
-
                     string lowerPath = path.ToLowerInvariant();
 
                     if (lowerPath.Contains("toby") ||
@@ -662,41 +1014,6 @@ namespace Dimari.Story
                 new Vector3(0f, 0.055f, 0f), Quaternion.Euler(0f, 180f, 0f), new Vector3(0.31f, 0.006f, 0.20f), screenMat);
         }
 
-        private void CreateDetailedRogovoSignpost(Transform parent)
-        {
-            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
-
-            Material woodPostMat = new Material(litShader);
-            SetMatColor(woodPostMat, new Color(0.38f, 0.25f, 0.14f, 1f));
-            if (woodPostMat.HasProperty("_Smoothness")) woodPostMat.SetFloat("_Smoothness", 0.2f);
-
-            Material signBoardMat = new Material(litShader);
-            SetMatColor(signBoardMat, new Color(0.48f, 0.33f, 0.18f, 1f));
-
-            CreatePart(PrimitiveType.Cylinder, "SignPost", parent,
-                new Vector3(0f, 0.90f, 0f), Quaternion.identity, new Vector3(0.11f, 0.90f, 0.11f), woodPostMat);
-
-            CreatePart(PrimitiveType.Cube, "SignBoard", parent,
-                new Vector3(0.18f, 1.50f, 0f), Quaternion.identity, new Vector3(0.85f, 0.24f, 0.06f), signBoardMat);
-
-            GameObject textObj = new GameObject("SignText_Rogovo");
-            textObj.transform.SetParent(parent, false);
-            textObj.transform.localPosition = new Vector3(0.18f, 1.52f, -0.036f);
-            textObj.transform.localRotation = Quaternion.identity;
-            TextMesh tm = textObj.AddComponent<TextMesh>();
-            tm.text = "РОГОВО  →";
-            tm.characterSize = 0.045f;
-            tm.fontSize = 36;
-            tm.fontStyle = FontStyle.Bold;
-            tm.anchor = TextAnchor.MiddleCenter;
-            tm.alignment = TextAlignment.Center;
-            tm.color = new Color(0.96f, 0.92f, 0.78f, 1f);
-
-            BoxCollider signCol = parent.gameObject.AddComponent<BoxCollider>();
-            signCol.center = new Vector3(0.1f, 1.0f, 0f);
-            signCol.size = new Vector3(0.95f, 1.8f, 0.5f);
-        }
-
         private GameObject CreatePart(PrimitiveType type, string partName, Transform parent, Vector3 localPos, Quaternion localRot, Vector3 localScale, Material mat)
         {
             GameObject part = GameObject.CreatePrimitive(type);
@@ -744,8 +1061,18 @@ namespace Dimari.Story
                 _statusToastTimer -= Time.unscaledDeltaTime;
             }
 
-            // Плавный вес позы удержания планшета двумя руками перед грудью
-            float targetHoldBlend = (_hasPickedUpTablet && _isHoldingTabletInHands && !_isPlayingPickupAnim && !_isTabletViewerOpen) ? 1.0f : 0.0f;
+            // Плавное покачивание корабля на волнах у причала
+            if (_shipTransform != null)
+            {
+                float t = Time.time;
+                float bobY = Mathf.Sin(t * 1.4f) * 0.08f;
+                float rollZ = Mathf.Sin(t * 1.1f) * 2.2f;
+                float pitchX = Mathf.Cos(t * 0.9f) * 1.4f;
+                _shipTransform.localPosition = _shipBasePos + new Vector3(0f, bobY, 0f);
+                _shipTransform.localRotation = _shipBaseRot * Quaternion.Euler(pitchX, 0f, rollZ);
+            }
+
+            float targetHoldBlend = (_hasPickedUpTablet && _isHoldingTabletInHands && !_isPlayingPickupAnim && !_isTabletViewerOpen && !_isPlayingEndingCutscene) ? 1.0f : 0.0f;
             _holdTabletBlend = Mathf.MoveTowards(_holdTabletBlend, targetHoldBlend, Time.deltaTime * 5.0f);
 
             if (_isMenuOpen)
@@ -766,7 +1093,6 @@ namespace Dimari.Story
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
 
-                // По [E], [TAB] или [Пробел] — убираем планшет в рюкзак!
                 if (DimariInput.IsInteractPressed() || DimariInput.IsSkipOrContinuePressed() || IsTabKeyPressed())
                 {
                     PutTabletInBackpack();
@@ -776,14 +1102,12 @@ namespace Dimari.Story
                     KeepTabletInHands();
                 }
             }
-            else if (_hasPickedUpTablet)
+            else if (_hasPickedUpTablet && !_isPlayingEndingCutscene)
             {
-                // [TAB] — открыть крупный экран планшета с фото
                 if (IsTabKeyPressed())
                 {
                     OpenTabletViewer();
                 }
-                // [T] или Правая кнопка мыши (когда планшет в руках) — убрать планшет в рюкзак / достать в руки
                 else if (IsToggleHoldHandsKeyPressed() || (_isHoldingTabletInHands && IsRightMousePressed()))
                 {
                     if (_isHoldingTabletInHands)
@@ -801,7 +1125,7 @@ namespace Dimari.Story
             {
                 if (_isTabletViewerOpen)
                 {
-                    CloseTabletViewer();
+                    PutTabletInBackpack();
                 }
                 else if (_isSettingsOpen)
                 {
@@ -918,7 +1242,7 @@ namespace Dimari.Story
                 _equippedTabletTransform.gameObject.SetActive(false);
             }
 
-            if (!_isMenuOpen)
+            if (!_isMenuOpen && !_isPlayingEndingCutscene)
             {
                 if (_player != null) _player.IsControlEnabled = true;
                 Cursor.lockState = CursorLockMode.Locked;
@@ -939,7 +1263,7 @@ namespace Dimari.Story
                 _equippedTabletTransform.gameObject.SetActive(true);
             }
 
-            if (!_isMenuOpen)
+            if (!_isMenuOpen && !_isPlayingEndingCutscene)
             {
                 if (_player != null) _player.IsControlEnabled = true;
                 Cursor.lockState = CursorLockMode.Locked;
@@ -959,7 +1283,6 @@ namespace Dimari.Story
                 }
                 else if (_holdTabletBlend > 0.001f)
                 {
-                    // ДЕРЖИТ ПЛАНШЕТ ПЕРЕД СОБОЙ ДВУМЯ РУКАМИ!
                     ApplyHumanoidHoldTabletInBothHandsPose(_holdTabletBlend);
                 }
 
@@ -967,7 +1290,6 @@ namespace Dimari.Story
                 return;
             }
 
-            // В Главном Меню / Паузе — персонаж стоит СПРАВА экрана, а за ним качаются деревья леса
             if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
             if (_mainCam == null) _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
             if (_player == null || _mainCam == null) return;
@@ -1010,10 +1332,6 @@ namespace Dimari.Story
             }
         }
 
-        /// <summary>
-        /// Точный двухсуставный IK-солвер для руки: направляет плечо к точке локтя, а предплечье — точно к точке захвата предмета!
-        /// Работает независимо от локальных осей костей любого FBX-персонажа.
-        /// </summary>
         private void AimArmAtWorldTargets(Transform upperArm, Transform lowerArm, Transform hand, Vector3 elbowTarget, Vector3 handTarget, float weight)
         {
             if (upperArm == null || lowerArm == null || hand == null || weight <= 0.001f) return;
@@ -1035,11 +1353,6 @@ namespace Dimari.Story
             }
         }
 
-        /// <summary>
-        /// Поза удержания планшета ПЕРЕД СОБОЙ ДВУМЯ РУКАМИ:
-        /// Обе руки согнуты в локтях перед грудью, левая кисть держит левый край планшета, правая кисть — правый край,
-        /// голова слегка наклонена на экран планшета.
-        /// </summary>
         private void ApplyHumanoidHoldTabletInBothHandsPose(float weight)
         {
             if (_player == null) return;
@@ -1056,10 +1369,8 @@ namespace Dimari.Story
 
             Vector3 chestPos = chest != null ? chest.position : (_player.transform.position + charUp * 1.24f);
 
-            // Точка центра планшета повыше перед грудью персонажа (на удобном уровне чтения глазами)
             Vector3 tabletCenter = chestPos + charForward * 0.36f + charUp * 0.06f;
 
-            // Точки для локтей и кистей обеих рук (левая и правая грани планшета)
             Vector3 leftElbowTarget = chestPos + charForward * 0.16f - charRight * 0.24f - charUp * 0.12f;
             Vector3 rightElbowTarget = chestPos + charForward * 0.16f + charRight * 0.24f - charUp * 0.12f;
 
@@ -1077,7 +1388,6 @@ namespace Dimari.Story
             AimArmAtWorldTargets(lUpperArm, lLowerArm, lHand, leftElbowTarget, leftHandGrip, weight);
             AimArmAtWorldTargets(rUpperArm, rLowerArm, rHand, rightElbowTarget, rightHandGrip, weight);
 
-            // Лёгкий наклон шеи/головы вниз на экран планшета
             Transform neck = _characterAnimator.GetBoneTransform(HumanBodyBones.Neck);
             if (neck != null)
             {
@@ -1085,9 +1395,6 @@ namespace Dimari.Story
             }
         }
 
-        /// <summary>
-        /// Плавная 3D-анимация наклона персонажа и захвата предмета правой рукой с земли.
-        /// </summary>
         private void ApplyHumanoidPickupPose()
         {
             if (_player == null) return;
@@ -1128,22 +1435,17 @@ namespace Dimari.Story
             if (upperChest != null) upperChest.rotation = Quaternion.AngleAxis(16f * bendWeight, charRight) * upperChest.rotation;
             if (neck != null) neck.rotation = Quaternion.AngleAxis(18f * bendWeight, charRight) * neck.rotation;
 
-            // Направляем правую руку прямо к поднимаемому предмету на земле!
             Vector3 chestPos = chest != null ? chest.position : (_player.transform.position + Vector3.up * 1.0f);
             Vector3 elbowHint = chestPos + charForward * 0.20f + charRight * 0.22f - Vector3.up * 0.25f;
             Vector3 reachPoint = _pickupTargetWorldPos + Vector3.up * 0.12f;
             AimArmAtWorldTargets(rUpperArm, rLowerArm, rHand, elbowHint, reachPoint, bendWeight);
         }
 
-        /// <summary>
-        /// Держит поднятый рюкзак на спине персонажа, а планшет — перед грудью МЕЖДУ ДВУМЯ РУКАМИ!
-        /// </summary>
         private void UpdateEquippedItemsOnCharacter()
         {
             if (_player == null) return;
             if (_characterChestBone == null) CacheCharacterBones();
 
-            // 1. РЮКЗАК НА СПИНЕ ПЕРСОНАЖА
             if (_equippedBackpackTransform != null)
             {
                 Transform anchor = _characterChestBone != null ? _characterChestBone : _player.transform;
@@ -1160,12 +1462,10 @@ namespace Dimari.Story
                 _equippedBackpackTransform.rotation = Quaternion.LookRotation(-backForward, Vector3.up);
             }
 
-            // 2. ПЛАНШЕТ В РУКАХ ПЕРЕД СОБОЙ
             if (_equippedTabletTransform != null)
             {
-                if (_isTabletViewerOpen)
+                if (_isTabletViewerOpen || _isPlayingEndingCutscene)
                 {
-                    // Пока открыт крупный 2D-экран планшета по центру, прячем 3D-дубликат снизу, чтобы не было двух планшетов одновременно
                     _equippedTabletTransform.gameObject.SetActive(false);
                 }
                 else if (_isPlayingPickupAnim && _characterRightHandBone != null)
@@ -1181,7 +1481,6 @@ namespace Dimari.Story
                     Vector3 charForward = _player.transform.forward;
                     Vector3 charUp = Vector3.up;
 
-                    // Размещаем 3D-планшет ровно посередине между левой и правой кистями персонажа на уровне груди!
                     Vector3 handsCenter;
                     if (_characterLeftHandBone != null && _characterRightHandBone != null)
                     {
@@ -1196,7 +1495,6 @@ namespace Dimari.Story
                     }
 
                     _equippedTabletTransform.position = handsCenter;
-                    // Экран планшета (+Y) повёрнут к лицу персонажа и строго головой вверх (без переворота вверх ногами!)
                     Vector3 tabletTopEdge = (charForward + charUp * 0.90f).normalized;
                     Vector3 tabletScreenNormal = (-charForward * 0.67f + charUp * 0.74f).normalized;
                     _equippedTabletTransform.rotation = Quaternion.LookRotation(tabletTopEdge, tabletScreenNormal);
@@ -1273,7 +1571,7 @@ namespace Dimari.Story
                         _holdTabletBlend = 1.0f;
                         _equippedTabletTransform = itemTransform;
                         _equippedTabletTransform.localScale *= 0.85f;
-                        ShowStatusToast("Планшет в руках! ([TAB] — экран, [T] — убрать/достать)");
+                        ShowStatusToast("Планшет в руках! ([TAB] — экран, [T] — убрать в рюкзак)");
                     }
                 }
 
@@ -1291,6 +1589,170 @@ namespace Dimari.Story
             {
                 OpenTabletViewer();
             }
+        }
+
+        /// <summary>
+        /// КИНЕМАТОГРАФИЧНАЯ КАТ-СЦЕНА С АНИМАЦИЕЙ ХОДЬБЫ К ВОДЕ И КОРАБЛЮ:
+        /// 1) Герой говорит: «Нужно идти к воде — возможно, там будет корабль.»
+        /// 2) Камера показывает героя со стороны, включается анимация ходьбы (Walk_N), и герой шагает по деревянному пирсу к воде.
+        /// 3) Герой останавливается на краю причала, а камера плавно поднимается из-за его плеча, открывая вид на качающийся на воде КОРАБЛЬ и стоящего у трапа ПЕРСОНАЖА!
+        /// </summary>
+        private IEnumerator PlayWalkToWaterAndShipCutsceneRoutine(InteractableStoryObject shoreInteractable)
+        {
+            if (_isPlayingEndingCutscene) yield break;
+            _isPlayingEndingCutscene = true;
+            _interactionPrompt = "";
+            _isTabletViewerOpen = false;
+            _isHoldingTabletInHands = false;
+
+            if (shoreInteractable != null)
+            {
+                shoreInteractable.enabled = false;
+            }
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+            if (_mainCam == null) _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+
+            if (_player != null)
+            {
+                _player.IsControlEnabled = false;
+            }
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsCutsceneControlled = true;
+                // Обязательно делаем 3D-модель главного героя видимой, чтобы в кат-сцене было видно, как он идёт к воде!
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+
+            CacheCharacterBones();
+
+            Vector3 walkStart = _shoreStartPoint != null
+                ? _shoreStartPoint.position
+                : (_player != null ? _player.transform.position : Vector3.zero);
+            Vector3 walkEnd = _pierWalkEndPoint != null
+                ? _pierWalkEndPoint.position
+                : (walkStart + (_player != null ? _player.transform.forward * 5.2f : Vector3.forward * 5.2f));
+
+            Vector3 walkDir = (walkEnd - walkStart);
+            walkDir.y = 0f;
+            if (walkDir.sqrMagnitude < 0.01f) walkDir = Vector3.forward;
+            walkDir.Normalize();
+            Vector3 walkRight = Vector3.Cross(Vector3.up, walkDir).normalized;
+            Quaternion walkRot = Quaternion.LookRotation(walkDir, Vector3.up);
+
+            CharacterController cc = _player != null ? _player.GetComponent<CharacterController>() : null;
+            if (cc != null) cc.enabled = false;
+            if (_player != null)
+            {
+                _player.transform.position = walkStart;
+                _player.transform.rotation = walkRot;
+            }
+
+            // Фраза 1: «Нужно идти к воде — возможно, там будет корабль.»
+            ShowMonologue("«Нужно идти к воде — возможно, там будет корабль.»", 4.5f);
+
+            // Фаза 1 (0..4.2 сек): Персонаж идёт шагом по пирсу к воде с полноценной 3D-анимацией ходьбы!
+            float walkDuration = 4.2f;
+            float t = 0f;
+            float stepSoundTimer = 0.2f;
+
+            while (t < walkDuration)
+            {
+                t += Time.deltaTime;
+                float norm = Mathf.Clamp01(t / walkDuration);
+
+                if (_player != null)
+                {
+                    _player.transform.position = Vector3.Lerp(walkStart, walkEnd, norm);
+                    _player.transform.rotation = walkRot;
+                }
+
+                // Включаем 3D-анимацию ходьбы в Animator (Speed = 2.0f соответствует Walk_N в StarterAssets/BasicMotions)
+                if (_characterAnimator != null)
+                {
+                    _characterAnimator.SetFloat("Speed", 2.0f);
+                    _characterAnimator.SetFloat("MotionSpeed", 1.0f);
+                    _characterAnimator.SetBool("Grounded", true);
+                }
+
+                // Звуки шагов по причалу/берегу
+                stepSoundTimer -= Time.deltaTime;
+                if (stepSoundTimer <= 0f)
+                {
+                    stepSoundTimer = 0.48f;
+                    if (ProceduralForestAudio.Instance != null)
+                    {
+                        ProceduralForestAudio.Instance.PlayFootstep(false);
+                    }
+                }
+
+                // Кинематографичная камера плавно сопровождает идущего героя сбоку-сзади, открывая вид на воду и корабль
+                if (_mainCam != null && _player != null)
+                {
+                    Vector3 pPos = _player.transform.position;
+                    Vector3 camPos = pPos - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
+                    Vector3 lookAt = pPos + walkDir * 3.5f + Vector3.up * 1.15f;
+                    _mainCam.transform.position = camPos;
+                    _mainCam.transform.rotation = Quaternion.LookRotation(lookAt - camPos, Vector3.up);
+                }
+
+                yield return null;
+            }
+
+            // Персонаж останавливается у края причала перед кораблём (переход в стойку Idle)
+            if (_characterAnimator != null)
+            {
+                _characterAnimator.SetFloat("Speed", 0f);
+                _characterAnimator.SetFloat("MotionSpeed", 1f);
+            }
+
+            // Фраза 2: Герой видит корабль и стоящего на причале человека
+            ShowMonologue(
+                "«Постой-ка… Там у воды и правда стоит корабль, и у трапа кто-то ждёт! Похоже, он поможет добраться до Рогово.»",
+                6.0f
+            );
+
+            // Фаза 2 (4.2..9.0 сек): Панорамный наезд камеры из-за плеча героя на корабль и NPC у трапа
+            float revealDuration = 4.6f;
+            t = 0f;
+            Vector3 revealCamStart = walkEnd - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
+            Vector3 revealCamEnd = walkEnd - walkDir * 2.1f + walkRight * 1.05f + Vector3.up * 1.75f;
+            Vector3 shipLookTarget = _shipTransform != null
+                ? (_shipTransform.position + Vector3.up * 1.6f)
+                : (walkEnd + walkDir * 9.0f + Vector3.up * 1.5f);
+
+            while (t < revealDuration)
+            {
+                t += Time.deltaTime;
+                float norm = Mathf.Clamp01(t / revealDuration);
+                float smooth = Mathf.SmoothStep(0f, 1f, norm);
+
+                if (_mainCam != null)
+                {
+                    Vector3 camPos = Vector3.Lerp(revealCamStart, revealCamEnd, smooth);
+                    Vector3 lookPos = Vector3.Lerp(walkEnd + walkDir * 3.5f + Vector3.up * 1.15f, shipLookTarget, smooth);
+                    _mainCam.transform.position = camPos;
+                    _mainCam.transform.rotation = Quaternion.LookRotation(lookPos - camPos, Vector3.up);
+                }
+
+                yield return null;
+            }
+
+            if (cc != null) cc.enabled = true;
+            if (_cameraController != null)
+            {
+                _cameraController.BeginGameplayTransitionFromCutscene();
+            }
+            if (_player != null)
+            {
+                _player.IsControlEnabled = true;
+            }
+
+            _isPlayingEndingCutscene = false;
+            _isChapter2Reached = true;
+            SaveGame();
         }
 
         public void OpenMainMenuOnStartup()
@@ -1372,7 +1834,7 @@ namespace Dimari.Story
             {
                 _player.IsControlEnabled = false;
             }
-            else if (_player != null)
+            else if (_player != null && !_isPlayingEndingCutscene)
             {
                 _player.IsControlEnabled = true;
                 _showHUD = true;
@@ -1526,18 +1988,19 @@ namespace Dimari.Story
                 }
             }
 
+            InteractableStoryObject targetObj = null;
+            InteractableStoryObject[] allInteractables = FindObjectsByType<InteractableStoryObject>();
+            foreach (InteractableStoryObject iso in allInteractables)
+            {
+                if (iso != null && iso.questStepId == stepId)
+                {
+                    targetObj = iso;
+                    break;
+                }
+            }
+
             if (stepId == "find_backpack" || stepId == "find_tablet")
             {
-                InteractableStoryObject targetObj = null;
-                InteractableStoryObject[] allInteractables = FindObjectsByType<InteractableStoryObject>();
-                foreach (InteractableStoryObject iso in allInteractables)
-                {
-                    if (iso != null && iso.questStepId == stepId)
-                    {
-                        targetObj = iso;
-                        break;
-                    }
-                }
                 StartCoroutine(PlayPickupItemRoutine(stepId, targetObj));
             }
 
@@ -1556,8 +2019,8 @@ namespace Dimari.Story
 
             if (stepId == "rogovo_exit")
             {
-                _isChapter2Reached = true;
-                SaveGame();
+                // Запускаем кинематографичную кат-сцену с анимацией ходьбы к воде и кораблю!
+                StartCoroutine(PlayWalkToWaterAndShipCutsceneRoutine(targetObj));
             }
         }
 
@@ -1745,7 +2208,7 @@ namespace Dimari.Story
                 curY += 36f;
             }
 
-            if (!_isTabletViewerOpen)
+            if (!_isTabletViewerOpen && !_isPlayingEndingCutscene)
             {
                 float centerX = Screen.width * 0.5f;
                 float centerY = Screen.height * 0.5f;
@@ -1766,7 +2229,6 @@ namespace Dimari.Story
                 }
                 else if (_isHoldingTabletInHands)
                 {
-                    // Подсказка прямо под 3D-планшетом в руках, как убрать его в рюкзак
                     float pW = 480f;
                     float pH = 38f;
                     Rect pRect = new Rect(centerX - pW * 0.5f, Screen.height - 86f, pW, pH);
@@ -1805,7 +2267,7 @@ namespace Dimari.Story
 
             GUI.Label(
                 new Rect(tabX + 24f, tabY + 12f, tabW - 48f, 26f),
-                "<color=#FFDB6B><b>ПЛАНШЕТ ДИМАРИКА  •  ГАЛЕРЕЯ: ПОСЛЕДНЕЕ ФОТО  •  GPS: РОГОВО (16 М →)</b></color>",
+                "<color=#FFDB6B><b>ПЛАНШЕТ ДИМАРИКА  •  ГАЛЕРЕЯ: ПОСЛЕДНЕЕ ФОТО  •  ОРИЕНТИР: ИДТИ К ВОДЕ (КОРАБЛЬ →)</b></color>",
                 _questHeaderStyle
             );
 
@@ -1826,7 +2288,6 @@ namespace Dimari.Story
                 );
             }
 
-            // Две удобные кнопки внизу планшета: 1) Убрать в рюкзак, 2) Держать перед собой в руках
             float btnW = 360f;
             float btnH = 38f;
             float gap = 20f;
@@ -1995,7 +2456,7 @@ namespace Dimari.Story
 
             GUI.Label(
                 new Rect(w - 140f, bottomY, 125f, 26f),
-                "<color=#E8ECE8><b>ВЕР. 1.5.0</b></color>",
+                "<color=#E8ECE8><b>ВЕР. 1.6.0</b></color>",
                 _bottomBarTextStyle
             );
         }
@@ -2131,7 +2592,7 @@ namespace Dimari.Story
         {
             if (_statusToastTimer <= 0f || string.IsNullOrEmpty(_statusToast)) return;
 
-            float w = 420f;
+            float w = 440f;
             float h = 42f;
             Rect r = new Rect(Screen.width - w - 32f, 32f, w, h);
             GUI.DrawTexture(r, _subtitlePanelTex);
@@ -2145,7 +2606,7 @@ namespace Dimari.Story
 
         private void DrawChapter2TransitionOverlay()
         {
-            float boxW = 660f;
+            float boxW = 680f;
             float boxH = 165f;
             float boxX = (Screen.width - boxW) * 0.5f;
             float boxY = Screen.height * 0.22f;
@@ -2159,7 +2620,7 @@ namespace Dimari.Story
             );
             GUI.Label(
                 new Rect(boxX + 24f, boxY + 74f, boxW - 48f, 68f),
-                "<color=#FFFFFF><b>Переход во 2-ю главу: «Городок Димарика, Рогово»\nВсе задачи в лесу выполнены!</b></color>",
+                "<color=#FFFFFF><b>У берега найден корабль! Отправление во 2-ю главу: «Городок Димарика, Рогово»</b></color>",
                 _subtitleStyle
             );
         }
