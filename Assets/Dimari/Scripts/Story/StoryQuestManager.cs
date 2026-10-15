@@ -58,6 +58,13 @@ namespace Dimari.Story
         [Tooltip("Запасная позиция ног на кормовой палубе, если отдельного штурвала в модели нет. Подстройте под модель.")]
         public Vector3 captainFallbackPosition = new Vector3(0f, 1.8f, -2.2f);
         public Vector3 captainFacingEuler = Vector3.zero;
+        [Header("Подогнанный капитан Sky Protective Suit / Stylized Pirate Ship")]
+        [Tooltip("Использовать проверенную расстановку капитана вместо поиска штурвала. Отключите для другого корабля или CaptainHelmAnchor.")]
+        public bool useFittedCaptainPlacement = true;
+        public Vector3 fittedCaptainPosition = new Vector3(0.182f, 2.124f, -1.563f);
+        [Min(0.01f)]
+        [Tooltip("Масштаб корня NPC относительно нормализованной модели, подобранный на корабле.")]
+        public float fittedCaptainScale = 0.3f;
 
         public bool IsMenuOpen => _isMenuOpen;
         public bool HasGameStarted => _hasGameStarted;
@@ -555,6 +562,14 @@ namespace Dimari.Story
 
         private void PositionCaptainAtHelm(Transform captain, Transform ship)
         {
+            if (useFittedCaptainPlacement)
+            {
+                captain.localPosition = fittedCaptainPosition;
+                captain.localRotation = Quaternion.Euler(captainFacingEuler);
+                captain.localScale = Vector3.one * Mathf.Max(0.01f, fittedCaptainScale);
+                return;
+            }
+            captain.localScale = Vector3.one;
             Transform model = ship.Find("AssetStore_Ship_Model");
             Transform anchor = null;
             if (model != null && !string.IsNullOrWhiteSpace(captainHelmAnchorPath))
