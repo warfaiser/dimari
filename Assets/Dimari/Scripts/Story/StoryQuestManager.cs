@@ -1863,7 +1863,9 @@ namespace Dimari.Story
 
                 if (_player != null)
                 {
-                    _player.transform.position = Vector3.Lerp(walkStart, walkEnd, norm);
+                    Vector3 stepPosition = Vector3.Lerp(walkStart, walkEnd, norm);
+                    _player.transform.position = cliffArrivalPoint != null
+                        ? GroundCinematicPosition(stepPosition) : stepPosition;
                     _player.transform.rotation = walkRot;
                 }
 
@@ -1958,6 +1960,93 @@ namespace Dimari.Story
             SaveGame();
         }
 
+        private Vector3 GroundCinematicPosition(Vector3 position)
+        {
+            float nearest = float.PositiveInfinity;
+            Vector3 result = position;
+            foreach (RaycastHit hit in Physics.RaycastAll(position + Vector3.up * 4f, Vector3.down,
+                12f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (hit.transform.IsChildOf(_player.transform) ||
+                    (_shipTransform != null && hit.transform.IsChildOf(_shipTransform))) continue;
+                if (hit.normal.y < 0.45f) continue;
+                float delta = Mathf.Abs(hit.point.y - position.y);
+                if (delta < nearest) { nearest = delta; result.y = hit.point.y + 0.02f; }
+            }
+            return result;
+        }
+
+        private bool TryFindShipStairRoute(Vector3 captainLocal, out Vector3 bottom, out Vector3 top)
+        {
+            bottom = top = Vector3.zero;
+            Transform bottomAnchor = null, topAnchor = null;
+            foreach (Transform part in _shipTransform.GetComponentsInChildren<Transform>(true))
+            {
+                if (part.name == "StairBottom") bottomAnchor = part;
+                if (part.name == "StairTop") topAnchor = part;
+            }
+            if (bottomAnchor != null && topAnchor != null)
+            {
+                bottom = _shipTransform.InverseTransformPoint(bottomAnchor.position);
+                top = _shipTransform.InverseTransformPoint(topAnchor.position);
+                return true;
+            }
+            float best = float.PositiveInfinity;
+            foreach (MeshFilter mesh in _shipTransform.GetComponentsInChildren<MeshFilter>())
+            {
+                string name = mesh.name.ToLowerInvariant();
+                if ((!name.Contains("stair") && !name.Contains("stairs") && !name.Contains("ladder")) ||
+                    name.Contains("rail") || mesh.sharedMesh == null) continue;
+                Bounds bounds = mesh.sharedMesh.bounds;
+                Bounds local = new Bounds(_shipTransform.InverseTransformPoint(mesh.transform.TransformPoint(bounds.center)), Vector3.zero);
+                for (int i = 0; i < 8; i++)
+                {
+                    Vector3 corner = bounds.center + Vector3.Scale(bounds.extents,
+                        new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+                    local.Encapsulate(_shipTransform.InverseTransformPoint(mesh.transform.TransformPoint(corner)));
+                }
+                // Choose either staircase, with the upper end nearest the captain.
+                bool alongZ = local.size.z >= local.size.x;
+                Vector3 endA = local.center, endB = local.center;
+                if (alongZ) { endA.z = local.min.z; endB.z = local.max.z; }
+                else { endA.x = local.min.x; endB.x = local.max.x; }
+                Vector3 flatCaptain = captainLocal; flatCaptain.y = local.center.y;
+                Vector3 upper = (endA - flatCaptain).sqrMagnitude < (endB - flatCaptain).sqrMagnitude ? endA : endB;
+                Vector3 lower = upper == endA ? endB : endA;
+                upper.y = local.max.y + 0.02f;
+                lower.y = local.min.y + 0.02f;
+                float distance = (upper - captainLocal).sqrMagnitude;
+                if (distance < best) { best = distance; bottom = lower; top = upper; }
+            }
+            return best < float.PositiveInfinity;
+        }
+
+        private IEnumerator WalkShipSegment(Vector3 from, Vector3 to)
+        {
+            float duration = Mathf.Max(0.3f, Vector3.Distance(from, to) / 1.25f);
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                elapsed += Time.deltaTime;
+                _player.transform.position = _shipTransform.TransformPoint(Vector3.Lerp(from, to, Mathf.Clamp01(elapsed / duration)));
+                Vector3 facing = Vector3.ProjectOnPlane(_shipTransform.TransformDirection(to - from), Vector3.up);
+                if (facing.sqrMagnitude > 0.001f) _player.transform.rotation = Quaternion.LookRotation(facing);
+                if (_characterAnimator != null)
+                {
+                    _characterAnimator.SetFloat("Speed", 2f);
+                    _characterAnimator.SetFloat("MotionSpeed", 1f);
+                    _characterAnimator.SetBool("Grounded", true);
+                }
+                if (_mainCam != null)
+                {
+                    Vector3 look = _player.transform.position + Vector3.up * 1.3f;
+                    Vector3 camera = look - _player.transform.forward * 3f + _shipTransform.right * 1.2f + Vector3.up * 0.6f;
+                    _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                }
+                yield return null;
+            }
+        }
+
         private IEnumerator PlayCaptainConversation()
         {
             if (_player == null || _npcTransform == null || _shipTransform == null) yield break;
@@ -1971,20 +2060,22 @@ namespace Dimari.Story
             }
             Vector3 captainLocal = _shipTransform.InverseTransformPoint(_npcTransform.position);
             Vector3 meetingLocal = captainLocal + Vector3.forward * 2f;
-            Vector3 approachLocal = meetingLocal + Vector3.forward * 1.5f;
-            _player.transform.position = _shipTransform.TransformPoint(approachLocal);
-            _endingFade = 0f;
-            float elapsed = 0f;
-            while (elapsed < 2f)
+            if (TryFindShipStairRoute(captainLocal, out Vector3 stairBottom, out Vector3 stairTop))
             {
-                elapsed += Time.deltaTime;
-                Vector3 local = Vector3.Lerp(approachLocal, meetingLocal, Mathf.Clamp01(elapsed / 2f));
-                _player.transform.position = _shipTransform.TransformPoint(local);
-                Vector3 facing = Vector3.ProjectOnPlane(_npcTransform.position - _player.transform.position, Vector3.up);
-                if (facing.sqrMagnitude > 0.001f) _player.transform.rotation = Quaternion.LookRotation(facing);
-                if (_characterAnimator != null) _characterAnimator.SetFloat("Speed", 2f);
-                FrameCaptainConversation(false);
-                yield return null;
+                Vector3 approachLocal = stairBottom + (stairBottom - stairTop).normalized * 1.5f;
+                approachLocal.y = stairBottom.y;
+                _player.transform.position = _shipTransform.TransformPoint(approachLocal);
+                _endingFade = 0f;
+                yield return WalkShipSegment(approachLocal, stairBottom);
+                yield return WalkShipSegment(stairBottom, stairTop);
+                yield return WalkShipSegment(stairTop, meetingLocal);
+            }
+            else
+            {
+                // No invented diagonal route through the cabin if the mesh has no separate stairs.
+                _player.transform.position = _shipTransform.TransformPoint(meetingLocal);
+                _endingFade = 0f;
+                Debug.LogWarning("[Dimari] Не найдена отдельная лестница. Добавьте StairBottom и StairTop в префаб корабля для точного маршрута.");
             }
             if (_characterAnimator != null) _characterAnimator.SetFloat("Speed", 0f);
             if (heroCaptainQuestion == null)
