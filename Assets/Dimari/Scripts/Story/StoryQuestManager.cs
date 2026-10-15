@@ -745,8 +745,8 @@ namespace Dimari.Story
             }
 
             // Плавный вес позы удержания планшета двумя руками перед грудью
-            float targetHoldBlend = (_hasPickedUpTablet && _isHoldingTabletInHands && !_isPlayingPickupAnim) ? 1.0f : 0.0f;
-            _holdTabletBlend = Mathf.MoveTowards(_holdTabletBlend, targetHoldBlend, Time.deltaTime * 4.0f);
+            float targetHoldBlend = (_hasPickedUpTablet && _isHoldingTabletInHands && !_isPlayingPickupAnim && !_isTabletViewerOpen) ? 1.0f : 0.0f;
+            _holdTabletBlend = Mathf.MoveTowards(_holdTabletBlend, targetHoldBlend, Time.deltaTime * 5.0f);
 
             if (_isMenuOpen)
             {
@@ -766,23 +766,34 @@ namespace Dimari.Story
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
 
+                // По [E], [TAB] или [Пробел] — убираем планшет в рюкзак!
                 if (DimariInput.IsInteractPressed() || DimariInput.IsSkipOrContinuePressed() || IsTabKeyPressed())
                 {
-                    CloseTabletViewer();
+                    PutTabletInBackpack();
+                }
+                else if (IsToggleHoldHandsKeyPressed())
+                {
+                    KeepTabletInHands();
                 }
             }
             else if (_hasPickedUpTablet)
             {
-                // [TAB] — открыть/закрыть крупный экран планшета с фото
+                // [TAB] — открыть крупный экран планшета с фото
                 if (IsTabKeyPressed())
                 {
                     OpenTabletViewer();
                 }
-                // [T] — убрать планшет в рюкзак или снова взять перед собой в обе руки
-                if (IsToggleHoldHandsKeyPressed())
+                // [T] или Правая кнопка мыши (когда планшет в руках) — убрать планшет в рюкзак / достать в руки
+                else if (IsToggleHoldHandsKeyPressed() || (_isHoldingTabletInHands && IsRightMousePressed()))
                 {
-                    _isHoldingTabletInHands = !_isHoldingTabletInHands;
-                    ShowStatusToast(_isHoldingTabletInHands ? "Планшет в руках перед собой" : "Планшет убран в рюкзак ([T] — достать)");
+                    if (_isHoldingTabletInHands)
+                    {
+                        PutTabletInBackpack();
+                    }
+                    else
+                    {
+                        KeepTabletInHands();
+                    }
                 }
             }
 
@@ -836,25 +847,56 @@ namespace Dimari.Story
                 return true;
             }
 #endif
-            return Input.GetKeyDown(KeyCode.Tab);
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetKeyDown(KeyCode.Tab))
+            {
+                return true;
+            }
+#endif
+            return false;
         }
 
         private bool IsToggleHoldHandsKeyPressed()
         {
 #if ENABLE_INPUT_SYSTEM
             if (UnityEngine.InputSystem.Keyboard.current != null &&
-                UnityEngine.InputSystem.Keyboard.current.tKey.wasPressedThisFrame)
+                (UnityEngine.InputSystem.Keyboard.current.tKey.wasPressedThisFrame ||
+                 UnityEngine.InputSystem.Keyboard.current.qKey.wasPressedThisFrame ||
+                 UnityEngine.InputSystem.Keyboard.current.rKey.wasPressedThisFrame))
             {
                 return true;
             }
 #endif
-            return Input.GetKeyDown(KeyCode.T);
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetKeyDown(KeyCode.T) || Input.GetKeyDown(KeyCode.Q) || Input.GetKeyDown(KeyCode.R))
+            {
+                return true;
+            }
+#endif
+            return false;
+        }
+
+        private bool IsRightMousePressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null &&
+                UnityEngine.InputSystem.Mouse.current.rightButton.wasPressedThisFrame)
+            {
+                return true;
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetMouseButtonDown(1))
+            {
+                return true;
+            }
+#endif
+            return false;
         }
 
         public void OpenTabletViewer()
         {
             _isTabletViewerOpen = true;
-            _isHoldingTabletInHands = true;
             if (_player != null) _player.IsControlEnabled = false;
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
@@ -862,15 +904,49 @@ namespace Dimari.Story
 
         public void CloseTabletViewer()
         {
+            PutTabletInBackpack();
+        }
+
+        public void PutTabletInBackpack()
+        {
             _isTabletViewerOpen = false;
-            // Персонаж продолжает держать 3D-планшет двумя руками перед собой при ходьбе!
-            _isHoldingTabletInHands = true;
+            _isHoldingTabletInHands = false;
+            _holdTabletBlend = 0f;
+
+            if (_equippedTabletTransform != null)
+            {
+                _equippedTabletTransform.gameObject.SetActive(false);
+            }
+
             if (!_isMenuOpen)
             {
                 if (_player != null) _player.IsControlEnabled = true;
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible = false;
             }
+
+            ShowStatusToast("Планшет убран в рюкзак ([TAB] — фото, [T] — в руки)");
+        }
+
+        public void KeepTabletInHands()
+        {
+            _isTabletViewerOpen = false;
+            _isHoldingTabletInHands = true;
+            _holdTabletBlend = 1.0f;
+
+            if (_equippedTabletTransform != null)
+            {
+                _equippedTabletTransform.gameObject.SetActive(true);
+            }
+
+            if (!_isMenuOpen)
+            {
+                if (_player != null) _player.IsControlEnabled = true;
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+            }
+
+            ShowStatusToast("Планшет в руках ([T] или ПКМ — убрать в рюкзак)");
         }
 
         private void LateUpdate()
@@ -1688,9 +1764,23 @@ namespace Dimari.Story
                         _promptStyle
                     );
                 }
+                else if (_isHoldingTabletInHands)
+                {
+                    // Подсказка прямо под 3D-планшетом в руках, как убрать его в рюкзак
+                    float pW = 480f;
+                    float pH = 38f;
+                    Rect pRect = new Rect(centerX - pW * 0.5f, Screen.height - 86f, pW, pH);
+                    GUI.DrawTexture(pRect, _subtitlePanelTex);
+                    GUI.DrawTexture(new Rect(pRect.x, pRect.y, pRect.width, 2f), _goldAccentTex);
+                    GUI.Label(
+                        pRect,
+                        "<color=#FFE875><b>[T] или [ПКМ] Убрать в рюкзак   •   [TAB] На весь экран</b></color>",
+                        _promptStyle
+                    );
+                }
             }
 
-            string tabHint = _hasPickedUpTablet ? "   [TAB] Экран планшета   [T] В руках / Убрать" : "";
+            string tabHint = _hasPickedUpTablet ? "   [TAB] Фото   [T / ПКМ] Убрать в рюкзак / В руки" : "";
             float bottomBarW = _hasPickedUpTablet ? 860f : 530f;
             GUI.DrawTexture(new Rect(24f, Screen.height - 42f, bottomBarW, 30f), _darkPanelTex);
             GUI.Label(
@@ -1736,19 +1826,43 @@ namespace Dimari.Story
                 );
             }
 
-            Rect closeBtnRect = new Rect(tabX + (tabW - 560f) * 0.5f, tabY + tabH - 50f, 560f, 38f);
-            GUI.DrawTexture(closeBtnRect, _buttonHoverBarTex);
-            GUI.DrawTexture(new Rect(closeBtnRect.x, closeBtnRect.y, 4f, closeBtnRect.height), _goldAccentTex);
+            // Две удобные кнопки внизу планшета: 1) Убрать в рюкзак, 2) Держать перед собой в руках
+            float btnW = 360f;
+            float btnH = 38f;
+            float gap = 20f;
+            float startBtnsX = tabX + (tabW - (btnW * 2f + gap)) * 0.5f;
+            float btnsY = tabY + tabH - 50f;
+
+            Rect putAwayBtnRect = new Rect(startBtnsX, btnsY, btnW, btnH);
+            GUI.DrawTexture(putAwayBtnRect, _buttonHoverBarTex);
+            GUI.DrawTexture(new Rect(putAwayBtnRect.x, putAwayBtnRect.y, 4f, putAwayBtnRect.height), _goldAccentTex);
             GUI.Label(
-                closeBtnRect,
-                "<color=#FFE875><b>[E] / [TAB] / [КЛИК] ЗАКРЫТЬ ЭКРАН (ДЕРЖАТЬ В РУКАХ)</b></color>",
+                putAwayBtnRect,
+                "<color=#FFE875><b>[E] / [TAB] УБРАТЬ В РЮКЗАК</b></color>",
                 _promptStyle
             );
 
-            if (Event.current.type == EventType.MouseDown && closeBtnRect.Contains(Event.current.mousePosition))
+            Rect holdInHandsBtnRect = new Rect(startBtnsX + btnW + gap, btnsY, btnW, btnH);
+            GUI.DrawTexture(holdInHandsBtnRect, _buttonHoverBarTex);
+            GUI.DrawTexture(new Rect(holdInHandsBtnRect.x, holdInHandsBtnRect.y, 4f, holdInHandsBtnRect.height), _accentBarTex);
+            GUI.Label(
+                holdInHandsBtnRect,
+                "<color=#FFFFFF><b>[T] ДЕРЖАТЬ В РУКАХ</b></color>",
+                _promptStyle
+            );
+
+            if (Event.current.type == EventType.MouseDown)
             {
-                Event.current.Use();
-                CloseTabletViewer();
+                if (putAwayBtnRect.Contains(Event.current.mousePosition))
+                {
+                    Event.current.Use();
+                    PutTabletInBackpack();
+                }
+                else if (holdInHandsBtnRect.Contains(Event.current.mousePosition))
+                {
+                    Event.current.Use();
+                    KeepTabletInHands();
+                }
             }
         }
 
