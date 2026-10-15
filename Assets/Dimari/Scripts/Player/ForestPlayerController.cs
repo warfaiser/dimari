@@ -280,6 +280,8 @@ namespace Dimari.Player
 
         private void Update()
         {
+            // Cinematics move the transform directly while the controller is disabled.
+            if (_controller == null || !_controller.enabled || !_controller.gameObject.activeInHierarchy) return;
             JumpAndGravity();
             GroundedCheck();
 

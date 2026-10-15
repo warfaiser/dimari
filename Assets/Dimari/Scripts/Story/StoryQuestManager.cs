@@ -40,6 +40,11 @@ namespace Dimari.Story
         [Header("Корабль и капитан за штурвалом")]
         [Tooltip("Назначьте основной префаб Stylized Pirate Ship (также для сборки игры).")]
         public GameObject shipPrefab;
+        [Header("Большой корабль и разговор с капитаном")]
+        [Min(8.5f)] public float shipModelSize = 28f;
+        public bool humanSizedCaptain = true;
+        public AudioClip heroCaptainQuestion;
+        public AudioClip pirateCaptainAnswer;
         [Header("Финал у обрыва")]
         [Tooltip("Поставьте на безопасный край обрыва, Z направьте в море. Без маркера остаётся прежний финал у причала.")]
         public Transform cliffArrivalPoint;
@@ -575,16 +580,16 @@ namespace Dimari.Story
             instance.transform.localRotation = Quaternion.identity;
             instance.transform.localScale = Vector3.one;
             UpgradeRenderersToURP(instance, new Color(0.35f, 0.24f, 0.16f, 1f));
-            NormalizeModelBoundsOnGround(instance.transform, 8.5f);
+            NormalizeModelBoundsOnGround(instance.transform, Mathf.Max(8.5f, shipModelSize));
         }
 
         private void PositionCaptainAtHelm(Transform captain, Transform ship)
         {
             if (useFittedCaptainPlacement)
             {
-                captain.localPosition = fittedCaptainPosition;
+                captain.localPosition = fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f);
                 captain.localRotation = Quaternion.Euler(captainFacingEuler);
-                captain.localScale = Vector3.one * Mathf.Max(0.01f, fittedCaptainScale);
+                captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
                 return;
             }
             captain.localScale = Vector3.one;
@@ -1936,6 +1941,8 @@ namespace Dimari.Story
                 yield return null;
             }
 
+            yield return PlayCaptainConversation();
+
             if (cc != null) cc.enabled = true;
             if (_cameraController != null)
             {
@@ -1949,6 +1956,83 @@ namespace Dimari.Story
             _isPlayingEndingCutscene = false;
             _isChapter2Reached = true;
             SaveGame();
+        }
+
+        private IEnumerator PlayCaptainConversation()
+        {
+            if (_player == null || _npcTransform == null || _shipTransform == null) yield break;
+            // A short montage cut brings the hero aboard; no walking across open water.
+            float fade = 0f;
+            while (fade < 0.6f)
+            {
+                fade += Time.deltaTime;
+                _endingFade = Mathf.Clamp01(fade / 0.6f);
+                yield return null;
+            }
+            Vector3 captainLocal = _shipTransform.InverseTransformPoint(_npcTransform.position);
+            Vector3 meetingLocal = captainLocal + Vector3.forward * 2f;
+            Vector3 approachLocal = meetingLocal + Vector3.forward * 1.5f;
+            _player.transform.position = _shipTransform.TransformPoint(approachLocal);
+            _endingFade = 0f;
+            float elapsed = 0f;
+            while (elapsed < 2f)
+            {
+                elapsed += Time.deltaTime;
+                Vector3 local = Vector3.Lerp(approachLocal, meetingLocal, Mathf.Clamp01(elapsed / 2f));
+                _player.transform.position = _shipTransform.TransformPoint(local);
+                Vector3 facing = Vector3.ProjectOnPlane(_npcTransform.position - _player.transform.position, Vector3.up);
+                if (facing.sqrMagnitude > 0.001f) _player.transform.rotation = Quaternion.LookRotation(facing);
+                if (_characterAnimator != null) _characterAnimator.SetFloat("Speed", 2f);
+                FrameCaptainConversation(false);
+                yield return null;
+            }
+            if (_characterAnimator != null) _characterAnimator.SetFloat("Speed", 0f);
+            if (heroCaptainQuestion == null)
+                heroCaptainQuestion = Resources.Load<AudioClip>("Voice_Hero_CaptainQuestion");
+            if (pirateCaptainAnswer == null)
+                pirateCaptainAnswer = Resources.Load<AudioClip>("Voice_Pirate_CaptainAnswer");
+            const string question = "Товарищ, где я? Я не помню, как я тут оказался. Подскажите, где я?";
+            const string answer = "Слышь, сухопутная крыса, ты на необитаемом острове! И скажу я тебе по-честному: повезло тебе, что старый морской волк бросил тут свой якорь. Прыгай на борт — и мы с тобой доплывём до города, чтоб меня черти драли!";
+            yield return CaptainDialogueLine("Герой: " + question, heroCaptainQuestion, 7f, false, meetingLocal);
+            yield return CaptainDialogueLine("Капитан: " + answer, pirateCaptainAnswer, 19f, true, meetingLocal);
+        }
+
+        private IEnumerator CaptainDialogueLine(string subtitle, AudioClip clip, float fallbackDuration,
+            bool captainSpeaking, Vector3 heroLocalPosition)
+        {
+            float duration = clip != null ? clip.length + 0.4f : fallbackDuration;
+            ShowMonologue(subtitle, duration);
+            AudioSource voice = null;
+            if (clip != null && _mainCam != null)
+            {
+                voice = _mainCam.gameObject.AddComponent<AudioSource>();
+                voice.spatialBlend = 0f;
+                voice.clip = clip;
+                voice.Play();
+            }
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                elapsed += Time.deltaTime;
+                _player.transform.position = _shipTransform.TransformPoint(heroLocalPosition);
+                FrameCaptainConversation(captainSpeaking);
+                yield return null;
+            }
+            if (voice != null) Destroy(voice);
+        }
+
+        private void FrameCaptainConversation(bool captainSpeaking)
+        {
+            if (_mainCam == null) return;
+            Vector3 heroHead = _player.transform.position + Vector3.up * 1.5f;
+            Vector3 captainHead = _npcTransform.position + Vector3.up * 1.5f;
+            Vector3 direction = (captainHead - heroHead).normalized;
+            Vector3 side = Vector3.Cross(Vector3.up, direction).normalized;
+            Vector3 look = captainSpeaking ? captainHead : heroHead;
+            Vector3 position = captainSpeaking
+                ? heroHead + side * 0.8f - direction * 0.4f
+                : captainHead + side * 0.8f + direction * 0.4f;
+            _mainCam.transform.SetPositionAndRotation(position, Quaternion.LookRotation(look - position));
         }
 
         public void OpenMainMenuOnStartup()
