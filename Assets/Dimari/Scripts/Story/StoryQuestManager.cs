@@ -37,6 +37,28 @@ namespace Dimari.Story
         public string questHeader = "Текущие задачи:";
         public List<QuestStep> questSteps = new List<QuestStep>();
 
+        [Header("Корабль и капитан за штурвалом")]
+        [Tooltip("Назначьте основной префаб Stylized Pirate Ship (также для сборки игры).")]
+        public GameObject shipPrefab;
+        [Header("Финал у обрыва")]
+        [Tooltip("Поставьте на безопасный край обрыва, Z направьте в море. Без маркера остаётся прежний финал у причала.")]
+        public Transform cliffArrivalPoint;
+        public float oceanLevel = -55f;
+        public float oceanSize = 2000f;
+        public Material oceanMaterial;
+        public Vector3 shipOffsetFromCliff = new Vector3(8f, 0f, 40f);
+        public AudioClip shoutForHelpVoice;
+        private InteractableStoryObject _cliffInteraction;
+        [Tooltip("Назначьте полный префаб Sky Protective Suit (также для сборки игры).")]
+        public GameObject captainPrefab;
+        [Tooltip("Необязательно: путь к пустому CaptainHelmAnchor внутри префаба корабля. Ось Z — направление взгляда, начало — под ногами.")]
+        public string captainHelmAnchorPath = "";
+        [Tooltip("Смещение ног от центра найденного штурвала в локальных метрах корня корабля.")]
+        public Vector3 captainOffsetFromWheel = new Vector3(0f, -1f, -0.65f);
+        [Tooltip("Запасная позиция ног на кормовой палубе, если отдельного штурвала в модели нет. Подстройте под модель.")]
+        public Vector3 captainFallbackPosition = new Vector3(0f, 1.8f, -2.2f);
+        public Vector3 captainFacingEuler = Vector3.zero;
+
         public bool IsMenuOpen => _isMenuOpen;
         public bool HasGameStarted => _hasGameStarted;
 
@@ -369,7 +391,9 @@ namespace Dimari.Story
             // =========================================================================
             // 3. ВЫХОД К ВОДЕ, ПРИЧАЛ, КОРАБЛЬ И NPC-ПЕРСОНАЖ (Задача 3 + Кат-сцена)
             // =========================================================================
-            Vector3 shorePos = GetGroundPoint(pPos + forward * 15.5f, pPos.y);
+            Vector3 shorePos = cliffArrivalPoint != null ? cliffArrivalPoint.position : GetGroundPoint(pPos + forward * 15.5f, pPos.y);
+            if (cliffArrivalPoint != null) forward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up).normalized;
+            if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
             GameObject shoreEventRoot = new GameObject("Quest3_ShoreAndShip");
             shoreEventRoot.transform.SetParent(storyRoot.transform);
             shoreEventRoot.transform.position = shorePos;
@@ -382,6 +406,7 @@ namespace Dimari.Story
             shoreInteract.objectTitle = "Выход к воде (Подойти к кораблю)";
             shoreInteract.inspectMonologue = "«Нужно идти к воде — возможно, там будет корабль. Постой-ка… Там у берега и правда стоит корабль!»";
             shoreInteract.interactionDistance = 3.8f;
+            _cliffInteraction = cliffArrivalPoint != null ? shoreInteract : null;
         }
 
         /// <summary>
@@ -414,6 +439,13 @@ namespace Dimari.Story
             endPt.transform.SetParent(root, false);
             endPt.transform.localPosition = new Vector3(0f, 0.18f, 5.2f);
             _pierWalkEndPoint = endPt.transform;
+            if (cliffArrivalPoint != null)
+            {
+                startPt.transform.localPosition = new Vector3(0f, 0f, -4f);
+                endPt.transform.localPosition = Vector3.zero;
+                startPt.transform.position = GetGroundPoint(startPt.transform.position, shorePos.y);
+                CreateSurroundingOcean(waterMat);
+            }
 
             // 1. Деревянный причал (мостик к воде, по которому идёт герой в кат-сцене)
             GameObject pierRoot = new GameObject("WoodenShorePier");
@@ -456,11 +488,25 @@ namespace Dimari.Story
             CreatePart(PrimitiveType.Cube, "ShoreWaterBay", root,
                 new Vector3(0f, -0.22f, 19.0f), Quaternion.identity, new Vector3(46f, 0.15f, 30f), waterMat);
 
+            if (cliffArrivalPoint != null)
+            {
+                pierRoot.SetActive(false);
+                Transform bay = root.Find("ShoreWaterBay");
+                if (bay != null) bay.gameObject.SetActive(false);
+            }
+
             // 3. 3D-КОРАБЛЬ НА ВОДЕ У ПРИЧАЛА
             GameObject shipObj = new GameObject("Dimari_WaterShip");
             shipObj.transform.SetParent(root, false);
             shipObj.transform.localPosition = new Vector3(1.2f, -0.05f, 12.2f);
             shipObj.transform.localRotation = Quaternion.Euler(0f, -68f, 0f);
+
+            if (cliffArrivalPoint != null)
+            {
+                Vector3 seaPosition = root.TransformPoint(shipOffsetFromCliff);
+                seaPosition.y = oceanLevel;
+                shipObj.transform.position = seaPosition;
+            }
 
             bool spawnedAssetShip = TrySpawnAssetStoreShipPrefab(shipObj.transform);
             if (!spawnedAssetShip)
@@ -474,9 +520,8 @@ namespace Dimari.Story
 
             // 4. NPC-ПЕРСОНАЖ (Капитан / Проводник), ожидающий у трапа корабля на конце причала
             GameObject npcObj = new GameObject("Dimari_ShipCaptain_NPC");
-            npcObj.transform.SetParent(root, false);
-            npcObj.transform.localPosition = new Vector3(0.55f, 0.20f, 6.2f);
-            npcObj.transform.localRotation = Quaternion.Euler(0f, 195f, 0f);
+            npcObj.transform.SetParent(shipObj.transform, false);
+            PositionCaptainAtHelm(npcObj.transform, shipObj.transform);
 
             SpawnNpcCharacterAtShip(npcObj.transform);
             _npcTransform = npcObj.transform;
@@ -486,12 +531,73 @@ namespace Dimari.Story
             triggerCol.size = new Vector3(2.8f, 2.2f, 2.8f);
         }
 
+        private void CreateSurroundingOcean(Material fallback)
+        {
+            GameObject ocean = GameObject.CreatePrimitive(PrimitiveType.Plane);
+            ocean.name = "Dimari_SurroundingOcean";
+            ocean.transform.SetParent(_shoreStartPoint.parent, true);
+            ocean.transform.position = new Vector3(cliffArrivalPoint.position.x, oceanLevel, cliffArrivalPoint.position.z);
+            ocean.transform.rotation = Quaternion.identity;
+            ocean.transform.localScale = new Vector3(Mathf.Max(100f, oceanSize) / 10f, 1f, Mathf.Max(100f, oceanSize) / 10f);
+            ocean.GetComponent<Renderer>().sharedMaterial = oceanMaterial != null ? oceanMaterial : fallback;
+            Destroy(ocean.GetComponent<Collider>());
+        }
+
+        private void PrepareShipModel(GameObject instance)
+        {
+            instance.name = "AssetStore_Ship_Model";
+            instance.transform.localPosition = Vector3.zero;
+            instance.transform.localRotation = Quaternion.identity;
+            instance.transform.localScale = Vector3.one;
+            UpgradeRenderersToURP(instance, new Color(0.35f, 0.24f, 0.16f, 1f));
+            NormalizeModelBoundsOnGround(instance.transform, 8.5f);
+        }
+
+        private void PositionCaptainAtHelm(Transform captain, Transform ship)
+        {
+            Transform model = ship.Find("AssetStore_Ship_Model");
+            Transform anchor = null;
+            if (model != null && !string.IsNullOrWhiteSpace(captainHelmAnchorPath))
+                anchor = model.Find(captainHelmAnchorPath);
+            if (anchor == null)
+            {
+                foreach (Transform part in ship.GetComponentsInChildren<Transform>(true))
+                    if (part.name == "CaptainHelmAnchor") { anchor = part; break; }
+            }
+            if (anchor != null)
+            {
+                captain.position = anchor.position;
+                captain.rotation = anchor.rotation;
+                return;
+            }
+
+            Transform wheel = null;
+            foreach (Transform part in ship.GetComponentsInChildren<Transform>(true))
+            {
+                string name = part.name.ToLowerInvariant().Replace("_", "").Replace(" ", "");
+                if (name.Contains("shipwheel") || name.Contains("steeringwheel") ||
+                    name.Contains("helm") || name == "wheel" || name.Contains("штурвал"))
+                { wheel = part; break; }
+            }
+            captain.localPosition = wheel != null
+                ? ship.InverseTransformPoint(wheel.position) + captainOffsetFromWheel
+                : captainFallbackPosition;
+            captain.localRotation = Quaternion.Euler(captainFacingEuler);
+            if (wheel == null)
+                Debug.LogWarning("[Dimari] Штурвал не выделен в модели: подстройте Captain Fallback Position или добавьте CaptainHelmAnchor на палубу за штурвалом.");
+        }
+
         /// <summary>
         /// Автоматически ищет импортированный пользователем 3D-корабль или лодку из Unity Asset Store
         /// (например: Boats Pack, Stylized Pirate Ship, Sailing Ships, Simple Boats and Tankers).
         /// </summary>
         private bool TrySpawnAssetStoreShipPrefab(Transform parent)
         {
+            if (shipPrefab != null)
+            {
+                PrepareShipModel(Instantiate(shipPrefab, parent));
+                return true;
+            }
 #if UNITY_EDITOR
             string[] filters = new string[] { "t:Prefab", "t:Model" };
             GameObject bestShip = null;
@@ -526,6 +632,14 @@ namespace Dimari.Story
                         lower.Contains("galleon");
 
                     if (!isShipOrBoat) continue;
+                    string assetName = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+                    if (assetName.Contains("barrel") || assetName.Contains("cannon") ||
+                        assetName.Contains("crate") || assetName.Contains("wheel") ||
+                        assetName.Contains("sail") && !assetName.Contains("ship") ||
+                        assetName.Contains("mast") || assetName.Contains("rope")) continue;
+                    // A package folder named Ship does not make every prop a ship.
+                    if (!assetName.Contains("ship") && !assetName.Contains("boat") &&
+                        !assetName.Contains("galleon") && !assetName.Contains("vessel")) continue;
 
                     GameObject candidate = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
                     if (candidate == null) continue;
@@ -535,6 +649,9 @@ namespace Dimari.Story
                     if (lower.EndsWith(".prefab")) score += 40;
                     if (lower.Contains("ship")) score += 30;
                     if (lower.Contains("boat")) score += 20;
+                    if (lower.Contains("pirate")) score += 150;
+                    if (lower.Contains("stylized") && lower.Contains("pirate")) score += 100;
+                    if (System.IO.Path.GetFileNameWithoutExtension(path).ToLowerInvariant().Contains("ship")) score += 80;
 
                     if (score > bestScore)
                     {
@@ -548,13 +665,7 @@ namespace Dimari.Story
             if (bestShip != null)
             {
                 GameObject instance = Instantiate(bestShip, parent);
-                instance.name = "AssetStore_Ship_Model";
-                instance.transform.localPosition = Vector3.zero;
-                instance.transform.localRotation = Quaternion.identity;
-                instance.transform.localScale = Vector3.one;
-
-                UpgradeRenderersToURP(instance, new Color(0.35f, 0.24f, 0.16f, 1f));
-                NormalizeModelBoundsOnGround(instance.transform, 8.5f);
+                PrepareShipModel(instance);
 
                 Debug.Log($"[Dimari] Загружен 3D-корабль из ассета: {bestPath}");
                 return true;
@@ -651,8 +762,8 @@ namespace Dimari.Story
         /// </summary>
         private void SpawnNpcCharacterAtShip(Transform parent)
         {
+            GameObject bestCharPrefab = captainPrefab;
 #if UNITY_EDITOR
-            GameObject bestCharPrefab = null;
             int bestScore = -1;
 
             string[] guids = UnityEditor.AssetDatabase.FindAssets("t:Prefab");
@@ -671,6 +782,8 @@ namespace Dimari.Story
                     lower.Contains("rpg character") ||
                     lower.Contains("chuby") ||
                     lower.Contains("protective_suit") ||
+                    lower.Contains("protective suit") ||
+                    lower.Contains("protectivesuit") ||
                     lower.Contains("didimo") ||
                     lower.Contains("villager") ||
                     lower.Contains("npc") ||
@@ -689,13 +802,15 @@ namespace Dimari.Story
                     score += 80;
                 }
 
-                if (score > bestScore)
+                if (lower.Contains("protective")) score += 250;
+                if (captainPrefab == null && score > bestScore)
                 {
                     bestScore = score;
                     bestCharPrefab = candidate;
                 }
             }
 
+#endif
             if (bestCharPrefab != null)
             {
                 GameObject npcInstance = Instantiate(bestCharPrefab, parent);
@@ -703,6 +818,19 @@ namespace Dimari.Story
                 npcInstance.transform.localPosition = Vector3.zero;
                 npcInstance.transform.localRotation = Quaternion.identity;
                 npcInstance.transform.localScale = Vector3.one;
+
+                NormalizeModelBoundsOnGround(npcInstance.transform, 1.8f);
+                foreach (Rigidbody body in npcInstance.GetComponentsInChildren<Rigidbody>(true))
+                {
+                    body.isKinematic = true;
+                    body.useGravity = false;
+                }
+                foreach (Collider collider in npcInstance.GetComponentsInChildren<Collider>(true))
+                    collider.enabled = false;
+                foreach (Camera camera in npcInstance.GetComponentsInChildren<Camera>(true))
+                    camera.enabled = false;
+                foreach (AudioListener listener in npcInstance.GetComponentsInChildren<AudioListener>(true))
+                    listener.enabled = false;
 
                 // Отключаем на NPC любые контроллеры управления игроком, чтобы он спокойно стоял на пирсе
                 MonoBehaviour[] scripts = npcInstance.GetComponentsInChildren<MonoBehaviour>(true);
@@ -723,10 +851,10 @@ namespace Dimari.Story
                 if (npcAnim != null && _characterAnimator != null && _characterAnimator.runtimeAnimatorController != null)
                 {
                     npcAnim.runtimeAnimatorController = _characterAnimator.runtimeAnimatorController;
+                    npcAnim.applyRootMotion = false;
                 }
                 return;
             }
-#endif
             // Запасной силуэт капитана в плаще у фонаря, если префаб не найден
             Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
             Material coatMat = new Material(litShader);
@@ -1056,6 +1184,12 @@ namespace Dimari.Story
 
         private void Update()
         {
+            if (_cliffInteraction != null && _player != null && _hasGameStarted &&
+                !_isMenuOpen && !_isPlayingEndingCutscene && !_isChapter2Reached && _hasPickedUpTablet &&
+                Vector3.Distance(_player.transform.position, _cliffInteraction.transform.position) <= 6f)
+            {
+                CompleteQuestStep("rogovo_exit", "");
+            }
             if (_statusToastTimer > 0f)
             {
                 _statusToastTimer -= Time.unscaledDeltaTime;
@@ -1710,9 +1844,12 @@ namespace Dimari.Story
 
             // Фраза 2: Герой видит корабль и стоящего на причале человека
             ShowMonologue(
-                "«Постой-ка… Там у воды и правда стоит корабль, и у трапа кто-то ждёт! Похоже, он поможет добраться до Рогово.»",
+                "«Эй-й-й! На борту! Я тут! Помоги!»",
                 6.0f
             );
+
+            if (shoutForHelpVoice != null && _mainCam != null)
+                AudioSource.PlayClipAtPoint(shoutForHelpVoice, _mainCam.transform.position);
 
             // Фаза 2 (4.2..9.0 сек): Панорамный наезд камеры из-за плеча героя на корабль и NPC у трапа
             float revealDuration = 4.6f;
