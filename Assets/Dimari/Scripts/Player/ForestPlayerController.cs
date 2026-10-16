@@ -425,18 +425,16 @@ namespace Dimari.Player
 
             Vector3 inputDirection = new Vector3(moveInput.x, 0.0f, moveInput.y).normalized;
 
-            if (moveInput != Vector2.zero)
-            {
-                // Use the rendered camera, not a stale cinematic rig / target reference.
-                Camera activeCamera = Camera.main;
-                if (activeCamera != null) cameraTransform = activeCamera.transform;
-                float camYaw = cameraTransform != null ? cameraTransform.eulerAngles.y : transform.eulerAngles.y;
-                _targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg + camYaw;
-                float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, _targetRotation, ref _rotationVelocity, rotationSmoothTime);
-                transform.rotation = Quaternion.Euler(0.0f, rotation, 0.0f);
-            }
-
-            Vector3 targetDirection = Quaternion.Euler(0.0f, _targetRotation, 0.0f) * Vector3.forward;
+            Camera activeCamera = Camera.main;
+            if (activeCamera != null) cameraTransform = activeCamera.transform;
+            ForestCameraController view = cameraTransform != null
+                ? cameraTransform.GetComponent<ForestCameraController>() : null;
+            float facingYaw = view != null ? view.MovementYaw
+                : (cameraTransform != null ? cameraTransform.eulerAngles.y : transform.eulerAngles.y);
+            transform.rotation = Quaternion.Euler(0f, facingYaw, 0f);
+            // WASD is relative to mouse-facing direction; sideways/backwards input
+            // does not rotate the body away from the camera heading.
+            Vector3 targetDirection = Quaternion.Euler(0f, facingYaw, 0f) * inputDirection;
 
             // При спуске по склону прижимаем движение к поверхности без второго вызова Move
             float verticalStep = _verticalVelocity * Time.deltaTime;

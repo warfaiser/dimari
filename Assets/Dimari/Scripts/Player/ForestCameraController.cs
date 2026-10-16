@@ -11,6 +11,7 @@ namespace Dimari.Player
     /// 2) В кат-сцене пробуждения (IsCutsceneControlled = true) — управляется режиссёром ForestAwakeningDirector.
     /// 3) В игре — плавный вид от 3-го лица или от 1-го лица (клавиша V).
     /// </summary>
+    [DefaultExecutionOrder(-100)]
     public class ForestCameraController : MonoBehaviour
     {
         [Header("Цель слежения")]
@@ -108,6 +109,21 @@ namespace Dimari.Player
             }
         }
 
+        public float MovementYaw => _yaw;
+
+        private void Update()
+        {
+            if (target == null || IsMenuCameraActive || IsCutsceneControlled ||
+                Cursor.lockState != CursorLockMode.Locked) return;
+            ForestPlayerController player = target.GetComponent<ForestPlayerController>();
+            if (player != null && !player.IsControlEnabled) return;
+            Vector2 look = DimariInput.GetLookDelta();
+            _yaw += look.x * mouseSensitivity;
+            _pitch = Mathf.Clamp(_pitch - look.y * mouseSensitivity, minPitch, maxPitch);
+            // Read mouse once before player movement, for both camera modes.
+            target.rotation = Quaternion.Euler(0f, _yaw, 0f);
+        }
+
         private void LateUpdate()
         {
             if (target == null) return;
@@ -163,11 +179,6 @@ namespace Dimari.Player
                 PlayerPrefs.SetInt("Dimari_FirstPerson", isFirstPerson ? 1 : 0);
                 UpdateCharacterMeshVisibility(isFirstPerson);
             }
-
-            Vector2 look = DimariInput.GetLookDelta();
-            _yaw += look.x * mouseSensitivity;
-            _pitch -= look.y * mouseSensitivity;
-            _pitch = Mathf.Clamp(_pitch, minPitch, maxPitch);
 
             Quaternion desiredRotation = Quaternion.Euler(_pitch, _yaw, 0f);
             Vector3 desiredPosition;
