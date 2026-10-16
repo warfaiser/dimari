@@ -91,7 +91,7 @@ namespace Dimari.Player
 
         private void CarryWithShip()
         {
-            if (_ridingShip != null)
+            if (_ridingShip != null && IsControlEnabled && _verticalVelocity <= 0f)
             {
                 Vector3 delta = _ridingShip.TransformPoint(_ridingLocalPosition) - transform.position;
                 _controller.Move(delta);
@@ -102,11 +102,11 @@ namespace Dimari.Player
         {
             _ridingShip = null;
             StoryQuestManager story = StoryQuestManager.Instance;
-            if (story == null || story.ShipRoot == null || !IsControlEnabled) return;
+            if (story == null || story.ShipRoot == null || !IsControlEnabled || _verticalVelocity > 0f) return;
             foreach (RaycastHit hit in Physics.RaycastAll(transform.position + Vector3.up * 0.25f,
                 Vector3.down, 0.65f, ~0, QueryTriggerInteraction.Ignore))
             {
-                if (hit.transform.IsChildOf(story.ShipRoot))
+                if (hit.transform.IsChildOf(story.ShipRoot) && hit.normal.y > 0.5f)
                 {
                     _ridingShip = story.ShipRoot;
                     _ridingLocalPosition = _ridingShip.InverseTransformPoint(transform.position);
@@ -440,6 +440,7 @@ namespace Dimari.Player
                 if (IsControlEnabled && DimariInput.IsJumpPressed() && _jumpTimeoutDelta <= 0.0f)
                 {
                     _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
+                    _ridingShip = null;
                     TriggerOrSetJump(true);
                 }
 
@@ -484,18 +485,9 @@ namespace Dimari.Player
                 targetSpeed = 0.0f;
             }
 
-            float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
-            float speedOffset = 0.1f;
-
-            if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
-            {
-                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed, Time.deltaTime * speedChangeRate);
-                _speed = Mathf.Round(_speed * 1000f) / 1000f;
-            }
-            else
-            {
-                _speed = targetSpeed;
-            }
+            // CharacterController.velocity describes only the most recent Move call.
+            // A separate moving-deck carry must not reset locomotion acceleration.
+            _speed = Mathf.MoveTowards(_speed, targetSpeed, Mathf.Max(0.1f, speedChangeRate) * Time.deltaTime);
 
             _animationBlend = Mathf.Lerp(_animationBlend, targetSpeed, Time.deltaTime * speedChangeRate);
             if (_animationBlend < 0.01f) _animationBlend = 0f;
