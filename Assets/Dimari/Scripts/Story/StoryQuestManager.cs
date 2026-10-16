@@ -125,6 +125,9 @@ namespace Dimari.Story
         private Transform _shoreStartPoint;
         private Transform _pierWalkEndPoint;
         private Transform _shipTransform;
+        private bool _isBoardingFromWater;
+        private Vector3 _boardingDeckLocal;
+        public Transform ShipRoot => _shipTransform;
         private Transform _npcTransform;
         private Animator _captainAnimator;
         private Transform _captainWheel;
@@ -561,6 +564,7 @@ namespace Dimari.Story
             }
 
             _shipTransform = shipObj.transform;
+            ConfigureBoardingDeck();
             _shipBasePos = _shipTransform.localPosition;
             _shipBaseRot = _shipTransform.localRotation;
 
@@ -596,6 +600,87 @@ namespace Dimari.Story
             ocean.transform.localScale = new Vector3(Mathf.Max(100f, oceanSize) / 10f, 1f, Mathf.Max(100f, oceanSize) / 10f);
             ocean.GetComponent<Renderer>().sharedMaterial = oceanMaterial != null ? oceanMaterial : fallback;
             Destroy(ocean.GetComponent<Collider>());
+        }
+
+        public bool TryGetWaterHeight(Vector3 position, out float height)
+        {
+            height = oceanLevel;
+            return cliffArrivalPoint != null && _shipTransform != null && IsInsideOcean(position);
+        }
+
+        private void ConfigureBoardingDeck()
+        {
+            _boardingDeckLocal = new Vector3(0f, 1f, 0f) * (shipModelSize / 8.5f);
+            foreach (MeshFilter mesh in _shipTransform.GetComponentsInChildren<MeshFilter>())
+            {
+                if (mesh.sharedMesh == null) continue;
+                if (mesh.GetComponent<Collider>() == null)
+                {
+                    MeshCollider collider = mesh.gameObject.AddComponent<MeshCollider>();
+                    collider.sharedMesh = mesh.sharedMesh;
+                }
+                string name = mesh.name.ToLowerInvariant();
+                if (name.Contains("floor") && !name.Contains("back") && !name.Contains("bottom"))
+                {
+                    Bounds bounds = mesh.sharedMesh.bounds;
+                    _boardingDeckLocal = _shipTransform.InverseTransformPoint(mesh.transform.TransformPoint(
+                        new Vector3(bounds.center.x, bounds.max.y, bounds.center.z))) + Vector3.up * 0.08f;
+                }
+            }
+            foreach (Transform point in _shipTransform.GetComponentsInChildren<Transform>())
+                if (point.name == "ShipBoardingPoint")
+                {
+                    _boardingDeckLocal = _shipTransform.InverseTransformPoint(point.position);
+                    break;
+                }
+        }
+
+        public bool CanBoardFromWater(Vector3 position)
+        {
+            if (_shipTransform == null || _isPlayingEndingCutscene || _isBoardingFromWater || _isMenuOpen) return false;
+            foreach (Collider collider in _shipTransform.GetComponentsInChildren<Collider>())
+            {
+                if (!collider.enabled || collider.isTrigger) continue;
+                if ((collider.ClosestPoint(position + Vector3.up) - (position + Vector3.up)).sqrMagnitude < 6.25f)
+                    return true;
+            }
+            return false;
+        }
+
+        public void BoardShipFromWater()
+        {
+            if (_player == null || !CanBoardFromWater(_player.transform.position)) return;
+            StartCoroutine(BoardShipFromWaterRoutine());
+        }
+
+        private IEnumerator BoardShipFromWaterRoutine()
+        {
+            _isBoardingFromWater = true;
+            _interactionPrompt = "";
+            _player.IsControlEnabled = false;
+            CharacterController controller = _player.GetComponent<CharacterController>();
+            if (controller != null) controller.enabled = false;
+            Vector3 startLocal = _shipTransform.InverseTransformPoint(_player.transform.position);
+            Vector3 raised = startLocal;
+            raised.y = _boardingDeckLocal.y + 0.5f;
+            // Rise outside the hull before moving over its railing.
+            for (int phase = 0; phase < 2; phase++)
+            {
+                float elapsed = 0f;
+                Vector3 from = phase == 0 ? startLocal : raised;
+                Vector3 to = phase == 0 ? raised : _boardingDeckLocal;
+                while (elapsed < 0.9f)
+                {
+                    elapsed += Time.deltaTime;
+                    _player.transform.position = _shipTransform.TransformPoint(Vector3.Lerp(from, to,
+                        Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / 0.9f))));
+                    yield return null;
+                }
+            }
+            _player.ResetWaterMotion();
+            if (controller != null) controller.enabled = true;
+            _player.IsControlEnabled = true;
+            _isBoardingFromWater = false;
         }
 
         private void PrepareShipModel(GameObject instance)
@@ -2046,6 +2131,7 @@ namespace Dimari.Story
 
             if (playSailingCutscene) yield return PlaySailingToRogovo();
 
+            if (_player != null) _player.ResetWaterMotion();
             if (cc != null) cc.enabled = true;
             if (_cameraController != null)
             {

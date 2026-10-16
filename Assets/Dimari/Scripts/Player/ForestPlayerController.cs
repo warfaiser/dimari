@@ -37,7 +37,83 @@ namespace Dimari.Player
         public bool IsGrounded { get; private set; } = true;
         public float CurrentNormalizedSpeed { get; private set; }
 
+        public bool IsSwimming { get; private set; }
+        public float swimSpeed = 2.3f;
+        private bool _waterBoardPrompt;
+        private Transform _ridingShip;
+        private Vector3 _ridingLocalPosition;
         private CharacterController _controller;
+
+        public void ResetWaterMotion()
+        {
+            _verticalVelocity = 0f;
+            _speed = 0f;
+            IsSwimming = false;
+            _ridingShip = null;
+        }
+
+        private bool UpdateSwimming()
+        {
+            StoryQuestManager story = StoryQuestManager.Instance;
+            if (_waterBoardPrompt && story != null)
+            {
+                story.SetInteractionPrompt("");
+                _waterBoardPrompt = false;
+            }
+            if (!IsControlEnabled || story == null || !story.TryGetWaterHeight(transform.position, out float water))
+            { IsSwimming = false; return false; }
+            float depth = water - transform.position.y;
+            if (depth < (IsSwimming ? 0.55f : 0.85f)) { IsSwimming = false; return false; }
+            IsSwimming = true;
+            IsGrounded = false;
+            _ridingShip = null;
+            _verticalVelocity = 0f;
+            Vector2 input = DimariInput.GetMoveInput();
+            Camera main = Camera.main;
+            ForestCameraController view = main != null ? main.GetComponent<ForestCameraController>() : null;
+            float yaw = view != null ? view.MovementYaw : transform.eulerAngles.y;
+            transform.rotation = Quaternion.Euler(0f, yaw, 0f);
+            Vector3 horizontal = Quaternion.Euler(0f, yaw, 0f) * new Vector3(input.x, 0f, input.y);
+            float bob = Mathf.Sin(Time.time * 1.8f) * 0.035f;
+            float vertical = Mathf.Clamp((water - 1.25f + bob - transform.position.y) * 5f, -2f, 4f);
+            _controller.Move((horizontal * swimSpeed + Vector3.up * vertical) * Time.deltaTime);
+            CurrentNormalizedSpeed = input.magnitude * 0.3f;
+            // The installed locomotion controller has no swimming clip: avoid running/falling in water.
+            UpdateLocomotionAnimator(0f, 0f);
+            if (story.CanBoardFromWater(transform.position))
+            {
+                story.SetInteractionPrompt("[E] Подняться на корабль");
+                _waterBoardPrompt = true;
+                if (DimariInput.IsInteractPressed()) story.BoardShipFromWater();
+            }
+            return true;
+        }
+
+        private void CarryWithShip()
+        {
+            if (_ridingShip != null)
+            {
+                Vector3 delta = _ridingShip.TransformPoint(_ridingLocalPosition) - transform.position;
+                _controller.Move(delta);
+            }
+        }
+
+        private void CacheShipSupport()
+        {
+            _ridingShip = null;
+            StoryQuestManager story = StoryQuestManager.Instance;
+            if (story == null || story.ShipRoot == null || !IsControlEnabled) return;
+            foreach (RaycastHit hit in Physics.RaycastAll(transform.position + Vector3.up * 0.25f,
+                Vector3.down, 0.65f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (hit.transform.IsChildOf(story.ShipRoot))
+                {
+                    _ridingShip = story.ShipRoot;
+                    _ridingLocalPosition = _ridingShip.InverseTransformPoint(transform.position);
+                    break;
+                }
+            }
+        }
         private float _speed;
         private float _animationBlend;
         private float _targetRotation;
@@ -283,6 +359,8 @@ namespace Dimari.Player
             // Cinematics move the transform directly while the controller is disabled.
             if (_controller == null || !_controller.enabled || !_controller.gameObject.activeInHierarchy) return;
             if (StoryQuestManager.Instance != null && StoryQuestManager.Instance.IsMenuOpen) return;
+            CarryWithShip();
+            if (UpdateSwimming()) return;
             JumpAndGravity();
             GroundedCheck();
 
@@ -295,6 +373,7 @@ namespace Dimari.Player
                     visualModelRoot.localRotation = Quaternion.identity;
                 }
                 MoveCharacter();
+                CacheShipSupport();
             }
             else
             {
