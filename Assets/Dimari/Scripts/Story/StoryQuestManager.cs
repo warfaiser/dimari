@@ -2418,6 +2418,7 @@ namespace Dimari.Story
             }
             _interactionPrompt = "";
             _player.IsControlEnabled = false;
+            _player.StopLocomotionAnimation();
             if (controller != null) controller.enabled = false;
             if (_cameraController != null)
             {
@@ -2720,7 +2721,7 @@ namespace Dimari.Story
         private IEnumerator CaptainDialogueLine(string subtitle, AudioClip clip, float fallbackDuration,
             bool captainSpeaking, Vector3 heroLocalPosition)
         {
-            float duration = clip != null ? clip.length + 0.4f : fallbackDuration;
+            float duration = Mathf.Clamp(clip != null ? clip.length + 0.4f : fallbackDuration, 1f, 90f);
             ShowMonologue(subtitle, duration);
             AudioSource voice = null;
             if (clip != null && _mainCam != null)
@@ -2733,7 +2734,9 @@ namespace Dimari.Story
             float elapsed = 0f;
             while (elapsed < duration)
             {
-                elapsed += Time.deltaTime;
+                if (_isMenuOpen) { yield return null; continue; }
+                elapsed += Time.unscaledDeltaTime;
+                _player.StopLocomotionAnimation();
                 _player.transform.position = _shipTransform.TransformPoint(heroLocalPosition);
                 Vector3 toCaptain = Vector3.ProjectOnPlane(_npcTransform.position - _player.transform.position, _shipTransform.up);
                 if (toCaptain.sqrMagnitude > 0.001f)

@@ -44,10 +44,18 @@ namespace Dimari.Player
         private Vector3 _ridingLocalPosition;
         private CharacterController _controller;
 
+        public void StopLocomotionAnimation()
+        {
+            _speed = 0f;
+            _animationBlend = 0f;
+            CurrentNormalizedSpeed = 0f;
+            UpdateLocomotionAnimator(0f, 0f);
+        }
+
         public void ResetWaterMotion()
         {
             _verticalVelocity = 0f;
-            _speed = 0f;
+            StopLocomotionAnimation();
             IsSwimming = false;
             _ridingShip = null;
         }
