@@ -133,6 +133,10 @@ namespace Dimari.Story
         private Transform _pierWalkEndPoint;
         private Transform _shipTransform;
         private bool _isBoardingFromWater;
+        private bool[,] _seaCells;
+        private float _seaCellSize = 16f;
+        private float _seaWidth;
+        private float _seaLength;
         private Vector3 _boardingDeckLocal;
         public Transform ShipRoot => _shipTransform;
         private Transform _npcTransform;
@@ -601,15 +605,66 @@ namespace Dimari.Story
 
         private void CreateSurroundingOcean(Material fallback)
         {
-            GameObject ocean = GameObject.CreatePrimitive(PrimitiveType.Plane);
-            ocean.name = "Dimari_SurroundingOcean";
+            // Extend seaward, not backwards into the starting forest. Build holes over land.
+            _seaWidth = Mathf.Max(bayWidth, Mathf.Max(100f, oceanSize));
+            _seaLength = Mathf.Max(bayLength, Mathf.Max(100f, oceanSize));
+            int columns = Mathf.Clamp(Mathf.CeilToInt(_seaWidth / _seaCellSize), 8, 160);
+            int rows = Mathf.Clamp(Mathf.CeilToInt(_seaLength / _seaCellSize), 8, 160);
+            float dx = _seaWidth / columns, dz = _seaLength / rows;
+            _seaCells = new bool[columns, rows];
+            List<Vector3> vertices = new List<Vector3>();
+            List<Vector2> uv = new List<Vector2>();
+            List<int> triangles = new List<int>();
+            Quaternion rotation = BayRotation();
+            Vector3 origin = cliffArrivalPoint.position;
+            origin.y = oceanLevel;
+            Physics.SyncTransforms();
+            for (int x = 0; x < columns; x++)
+                for (int z = 0; z < rows; z++)
+                {
+                    float left = -_seaWidth * 0.5f + x * dx;
+                    float near = bayStartFromCliff + z * dz;
+                    Vector3 center = origin + rotation * new Vector3(left + dx * 0.5f, 0f, near + dz * 0.5f);
+                    if (IsDryLandBelowSea(center) ||
+                        IsDryLandBelowSea(origin + rotation * new Vector3(left, 0f, near)) ||
+                        IsDryLandBelowSea(origin + rotation * new Vector3(left + dx, 0f, near)) ||
+                        IsDryLandBelowSea(origin + rotation * new Vector3(left, 0f, near + dz)) ||
+                        IsDryLandBelowSea(origin + rotation * new Vector3(left + dx, 0f, near + dz))) continue;
+                    _seaCells[x, z] = true;
+                    int i = vertices.Count;
+                    vertices.Add(new Vector3(left, 0f, near));
+                    vertices.Add(new Vector3(left, 0f, near + dz));
+                    vertices.Add(new Vector3(left + dx, 0f, near + dz));
+                    vertices.Add(new Vector3(left + dx, 0f, near));
+                    uv.Add(new Vector2((float)x / columns, (float)z / rows));
+                    uv.Add(new Vector2((float)x / columns, (float)(z + 1) / rows));
+                    uv.Add(new Vector2((float)(x + 1) / columns, (float)(z + 1) / rows));
+                    uv.Add(new Vector2((float)(x + 1) / columns, (float)z / rows));
+                    triangles.Add(i); triangles.Add(i + 1); triangles.Add(i + 2);
+                    triangles.Add(i); triangles.Add(i + 2); triangles.Add(i + 3);
+                }
+            GameObject ocean = new GameObject("Dimari_SurroundingOcean");
             ocean.transform.SetParent(_shoreStartPoint.parent, true);
-            Vector3 center = cliffArrivalPoint.position + BayRotation() * Vector3.forward * (bayStartFromCliff + bayLength * 0.5f);
-            center.y = oceanLevel;
-            ocean.transform.SetPositionAndRotation(center, BayRotation());
-            ocean.transform.localScale = new Vector3(Mathf.Max(80f, bayWidth) / 10f, 1f, Mathf.Max(100f, bayLength) / 10f);
-            ocean.GetComponent<Renderer>().sharedMaterial = oceanMaterial != null ? oceanMaterial : fallback;
-            Destroy(ocean.GetComponent<Collider>());
+            ocean.transform.SetPositionAndRotation(origin, rotation);
+            Mesh mesh = new Mesh { name = "Dimari_SeaWithLandCutouts", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+            mesh.SetVertices(vertices); mesh.SetUVs(0, uv); mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateNormals(); mesh.RecalculateBounds();
+            ocean.AddComponent<MeshFilter>().sharedMesh = mesh;
+            ocean.AddComponent<MeshRenderer>().sharedMaterial = oceanMaterial != null ? oceanMaterial : fallback;
+        }
+
+        private bool IsDryLandBelowSea(Vector3 point)
+        {
+            foreach (RaycastHit hit in Physics.RaycastAll(point + Vector3.up * 500f, Vector3.down,
+                1000f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if ((_player != null && hit.transform.IsChildOf(_player.transform)) ||
+                    (_shipTransform != null && hit.transform.IsChildOf(_shipTransform))) continue;
+                if (hit.transform.GetComponentInParent<InteractableStoryObject>() != null) continue;
+                // Terrain is the playable island, even in depressions below sea level.
+                if (hit.collider is TerrainCollider || hit.point.y >= oceanLevel - 0.5f) return true;
+            }
+            return false;
         }
 
         public bool TryGetWaterHeight(Vector3 position, out float height)
@@ -2509,8 +2564,12 @@ namespace Dimari.Story
         {
             if (cliffArrivalPoint == null) return false;
             Vector3 local = Quaternion.Inverse(BayRotation()) * (point - cliffArrivalPoint.position);
-            return Mathf.Abs(local.x) < Mathf.Max(80f, bayWidth) * 0.5f &&
-                local.z > bayStartFromCliff && local.z < bayStartFromCliff + Mathf.Max(100f, bayLength);
+            if (_seaCells == null) return false;
+            if (Mathf.Abs(local.x) >= _seaWidth * 0.5f || local.z <= bayStartFromCliff ||
+                local.z >= bayStartFromCliff + _seaLength) return false;
+            int x = Mathf.FloorToInt((local.x + _seaWidth * 0.5f) / _seaWidth * _seaCells.GetLength(0));
+            int z = Mathf.FloorToInt((local.z - bayStartFromCliff) / _seaLength * _seaCells.GetLength(1));
+            return _seaCells[x, z];
         }
 
         private IEnumerator PlaySailingToRogovo()
