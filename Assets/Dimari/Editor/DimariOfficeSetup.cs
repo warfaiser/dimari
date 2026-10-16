@@ -12,6 +12,30 @@ namespace Dimari.Editor
         private const string Source = Folder + "/Demo/Demo Scene.unity";
         private const string Destination = "Assets/Dimari/Scenes/Rogovo_Administration.unity";
 
+        [MenuItem("Dimari/Диагностика — что мешает пройти")]
+        public static void DiagnoseBlockedPath()
+        {
+            var player = Object.FindAnyObjectByType<Dimari.Player.ForestPlayerController>();
+            if (!Application.isPlaying || player == null)
+            { EditorUtility.DisplayDialog("Проход", "В Play подойдите к препятствию, посмотрите прямо на него и запустите эту команду.", "OK"); return; }
+            Camera camera = Camera.main;
+            Vector3 direction = Vector3.ProjectOnPlane(camera != null ? camera.transform.forward : player.transform.forward, Vector3.up).normalized;
+            int count = 0;
+            foreach (RaycastHit hit in Physics.CapsuleCastAll(player.transform.position + Vector3.up * 0.4f,
+                player.transform.position + Vector3.up * 1.5f, 0.3f, direction, 4f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (hit.transform.IsChildOf(player.transform)) continue;
+                string path = hit.transform.name;
+                for (Transform parent = hit.transform.parent; parent != null; parent = parent.parent)
+                    path = parent.name + "/" + path;
+                Debug.LogWarning("[Dimari] Преграда: " + path + " | " + hit.collider.GetType().Name +
+                    " | расстояние=" + hit.distance.ToString("F2") + " | точка=" + hit.point +
+                    " | нормаль=" + hit.normal, hit.collider);
+                count++;
+            }
+            Debug.Log("[Dimari] Проверка прохода: препятствий=" + count + ". Коллайдеры не изменены.");
+        }
+
         [MenuItem("Dimari/Администрация — автоматически настроить вход")]
         public static void AutoEntrance()
         {
