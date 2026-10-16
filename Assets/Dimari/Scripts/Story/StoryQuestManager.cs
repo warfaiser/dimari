@@ -2237,19 +2237,96 @@ namespace Dimari.Story
             yield return CaptainDialogueLine("Капитан: " + answer, pirateCaptainAnswer, 19f, true, meetingLocal);
         }
 
+        private bool TryFindOpenWaterVoyage(out Vector3 start, out Vector3 end)
+        {
+            start = end = _shipTransform.position;
+            float level = start.y;
+            Vector3 origin = start;
+            float length = Mathf.Clamp(sailingDistance, 20f, Mathf.Max(20f, oceanSize * 0.25f));
+            // Keep both hull and tracking camera well clear of land. Conservative checks
+            // intentionally reject questionable routes instead of sailing through scenery.
+            float[] radii = { 0f, 60f, 120f, 220f, 350f, 550f };
+            foreach (float radius in radii)
+            {
+                for (int i = 0; i < 16; i++)
+                {
+                    Vector3 direction = Quaternion.Euler(0f, i * 22.5f, 0f) * Vector3.forward;
+                    Vector3 candidate = origin + direction * radius;
+                    candidate.y = level;
+                    Vector3 destination = sailingDestination != null ? sailingDestination.position : candidate + direction * length;
+                    destination.y = level;
+                    if ((destination - candidate).sqrMagnitude < 100f) continue;
+                    if (!IsInsideOcean(candidate) || !IsInsideOcean(destination)) continue;
+                    Quaternion rotation = Quaternion.LookRotation(destination - candidate);
+                    float corridorLength = Vector3.Distance(candidate, destination);
+                    Vector3 center = (candidate + destination) * 0.5f + Vector3.up * 8f;
+                    Collider[] obstacles = Physics.OverlapBox(center,
+                        new Vector3(Mathf.Max(35f, shipModelSize), 12f, corridorLength * 0.5f + shipModelSize),
+                        rotation, ~0, QueryTriggerInteraction.Ignore);
+                    bool clear = true;
+                    foreach (Collider obstacle in obstacles)
+                    {
+                        if (obstacle.transform.IsChildOf(_shipTransform) ||
+                            obstacle.transform.IsChildOf(_player.transform) ||
+                            obstacle.name == "Dimari_SurroundingOcean") continue;
+                        clear = false;
+                        break;
+                    }
+                    if (!clear) continue;
+                    start = candidate; end = destination;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private bool IsInsideOcean(Vector3 point)
+        {
+            if (cliffArrivalPoint == null) return false;
+            float half = Mathf.Max(100f, oceanSize) * 0.5f - Mathf.Max(45f, shipModelSize);
+            return Mathf.Abs(point.x - cliffArrivalPoint.position.x) < half &&
+                Mathf.Abs(point.z - cliffArrivalPoint.position.z) < half;
+        }
+
         private IEnumerator PlaySailingToRogovo()
         {
             if (_shipTransform == null || _npcTransform == null || _player == null) yield break;
             Vector3 heroLocal = _shipTransform.InverseTransformPoint(_player.transform.position);
-            _sailingStart = _shipBasePos;
-            Vector3 destination = sailingDestination != null ? sailingDestination.position
-                : _shipTransform.position + (_shoreStartPoint != null
-                    ? _shoreStartPoint.forward : _shipTransform.forward) * sailingDistance;
-            destination.y = _shipTransform.position.y;
-            _sailingEnd = _shipTransform.parent != null
-                ? _shipTransform.parent.InverseTransformPoint(destination) : destination;
+            Physics.SyncTransforms();
+            if (!TryFindOpenWaterVoyage(out Vector3 seaStart, out Vector3 seaEnd))
+            {
+                Debug.LogWarning("[Dimari] Безопасный морской коридор не найден. Плавание отменено: проверьте Ocean Size, уровень воды и Sailing Destination.");
+                ShowStatusToast("Для плавания нужен свободный участок моря.");
+                yield break;
+            }
+            float fadeTime = 0f;
+            while (fadeTime < 0.6f)
+            {
+                fadeTime += Time.deltaTime;
+                _endingFade = Mathf.Clamp01(fadeTime / 0.6f);
+                yield return null;
+            }
+            Transform parent = _shipTransform.parent;
+            _sailingStart = parent != null ? parent.InverseTransformPoint(seaStart) : seaStart;
+            _sailingEnd = parent != null ? parent.InverseTransformPoint(seaEnd) : seaEnd;
+            _shipBasePos = _sailingStart;
+            Quaternion heading = Quaternion.LookRotation((seaEnd - seaStart).normalized, Vector3.up);
+            _shipBaseRot = parent != null ? Quaternion.Inverse(parent.rotation) * heading : heading;
+            _shipTransform.SetPositionAndRotation(seaStart, heading);
+            _player.transform.position = _shipTransform.TransformPoint(heroLocal);
             _sailingElapsed = 0f;
             _isSailing = true;
+            FrameCaptainConversation(false);
+            fadeTime = 0f;
+            while (fadeTime < 0.6f)
+            {
+                fadeTime += Time.deltaTime;
+                _endingFade = 1f - Mathf.Clamp01(fadeTime / 0.6f);
+                _player.transform.position = _shipTransform.TransformPoint(heroLocal);
+                FrameCaptainConversation(false);
+                yield return null;
+            }
+            _endingFade = 0f;
             string[] lines =
             {
                 "Капитан: Держись крепче, сухопутный! Курс на Рогово. Так кого ты там ищешь?",
