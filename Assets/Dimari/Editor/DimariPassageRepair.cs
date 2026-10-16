@@ -8,6 +8,55 @@ namespace Dimari.Editor
 {
     public static class DimariPassageRepair
     {
+        [MenuItem("Dimari/Администрация — восстановить пол за проходом")]
+        public static void RestoreVisibleGround()
+        {
+            if (Application.isPlaying)
+            { EditorUtility.DisplayDialog("Пол", "Остановите Play и откройте Chapter2_Rogovo.", "OK"); return; }
+            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            if (scene.name != "Chapter2_Rogovo") return;
+            int added = 0, existing = 0;
+            Undo.IncrementCurrentGroup();
+            int group = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName("Restore visible city ground collision");
+            foreach (GameObject root in scene.GetRootGameObjects())
+                foreach (MeshFilter filter in root.GetComponentsInChildren<MeshFilter>(true))
+                {
+                    // These are the actual rendered street/pavement meshes, NOT city_part_collider.
+                    bool street = filter.name == "city_part_demo_main1" || filter.name == "city_part_demo_main2"
+                        || filter.name == "city_part_highway";
+                    bool administration = false;
+                    for (Transform parent = filter.transform; parent != null; parent = parent.parent)
+                        if (parent.name == "office_building_1_with_base (2)") administration = true;
+                    if ((!street && !administration) || filter.sharedMesh == null || !filter.gameObject.activeInHierarchy) continue;
+                    var renderer = filter.GetComponent<Renderer>();
+                    if (renderer == null || !renderer.enabled) continue;
+                    // Do not replace or disable existing collision surfaces.
+                    if (filter.GetComponent<Collider>() != null) { existing++; continue; }
+                    MeshCollider collider = Undo.AddComponent<MeshCollider>(filter.gameObject);
+                    collider.sharedMesh = filter.sharedMesh;
+                    collider.convex = false;
+                    collider.isTrigger = false;
+                    EditorUtility.SetDirty(collider);
+                    added++;
+                }
+            Physics.SyncTransforms();
+            Undo.CollapseUndoOperations(group);
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            // Report actual support on both sides of the diagnosed wall, rather than claiming success blindly.
+            foreach (float z in new[] { 38.6f, 40.2f, 42f, 45f })
+            {
+                Vector3 origin = new Vector3(-58.58f, 12f, z);
+                RaycastHit hit;
+                if (Physics.Raycast(origin, Vector3.down, out hit, 30f, ~0, QueryTriggerInteraction.Ignore))
+                    Debug.Log("[Dimari] Пол: Z=" + z + ", Y=" + hit.point.y + ", поверхность=" + hit.collider.name + ", нормаль=" + hit.normal);
+                else Debug.LogWarning("[Dimari] Пол: НЕТ ОПОРЫ при Z=" + z + ". Нужна дополнительная проверка геометрии.");
+            }
+            Debug.Log("[Dimari] Коллизия видимой дороги/площадки: добавлено=" + added + ", уже было=" + existing +
+                ". Вырез прохода не отменён. Город сохранён. Проверьте путь пешком; новые коллайдеры могут выявить реальные бордюры и ступени.");
+        }
+
         [MenuItem("Dimari/Администрация — убрать невидимую стену прохода")]
         public static void Repair()
         {
