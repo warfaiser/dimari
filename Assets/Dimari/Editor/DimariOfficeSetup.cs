@@ -12,6 +12,89 @@ namespace Dimari.Editor
         private const string Source = Folder + "/Demo/Demo Scene.unity";
         private const string Destination = "Assets/Dimari/Scenes/Rogovo_Administration.unity";
 
+        [MenuItem("Dimari/Администрация — автоматически настроить вход")]
+        public static void AutoEntrance()
+        {
+            if (Application.isPlaying) return;
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.name != "Chapter2_Rogovo")
+            { EditorUtility.DisplayDialog("Вход", "Откройте Chapter2_Rogovo.", "OK"); return; }
+            var entrance = Object.FindAnyObjectByType<Dimari.Story.AdministrationEntrance>();
+            if (entrance == null)
+            { EditorUtility.DisplayDialog("Вход", "Сначала создайте вход командой «создать вход в городе».", "OK"); return; }
+            // Use the existing entrance as an approximate anchor, not SceneView's changing pivot.
+            Vector3 seed = entrance.transform.position;
+            Transform building = null;
+            float best = float.PositiveInfinity;
+            foreach (GameObject root in scene.GetRootGameObjects())
+                foreach (Transform item in root.GetComponentsInChildren<Transform>(true))
+                {
+                    if (item.name != "office_building_1_with_base (2)") continue;
+                    float distance = Vector3.ProjectOnPlane(item.position - seed, Vector3.up).sqrMagnitude;
+                    if (distance < best) { best = distance; building = item; }
+                }
+            if (building == null)
+            { EditorUtility.DisplayDialog("Вход", "Не найдено выбранное здание office_building_1_with_base (2). Ничего не изменено.", "OK"); return; }
+            Vector3 inward = Vector3.ProjectOnPlane(building.position - seed, Vector3.up).normalized;
+            if (inward.sqrMagnitude < 0.1f) inward = building.forward;
+            Vector3 side = Vector3.Cross(Vector3.up, inward);
+            bool found = false;
+            Vector3 chosen = seed;
+            // Prefer the current approach; search towards the door, then laterally around obstructions.
+            float[] offsets = { 0f, 1f, -1f, 2f, -2f };
+            foreach (float lateral in offsets)
+            {
+                for (int step = 3; step >= -2; step--)
+                {
+                    Vector3 candidate = seed + inward * step * 0.5f + side * lateral;
+                    RaycastHit[] hits = Physics.RaycastAll(candidate + Vector3.up * 15f, Vector3.down, 40f,
+                        ~0, QueryTriggerInteraction.Ignore);
+                    System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+                    foreach (RaycastHit hit in hits)
+                    {
+                        if (hit.normal.y < 0.8f || Mathf.Abs(hit.point.y - seed.y) > 5f) continue;
+                        Vector3 feet = hit.point + Vector3.up * 0.05f;
+                        if (Physics.CheckCapsule(feet + Vector3.up * 0.4f, feet + Vector3.up * 1.5f,
+                            0.3f, ~0, QueryTriggerInteraction.Ignore)) continue;
+                        chosen = feet; found = true; break;
+                    }
+                    if (found) break;
+                }
+                if (found) break;
+            }
+            if (!found)
+            { EditorUtility.DisplayDialog("Вход", "Не найден безопасный пол рядом со входом. Общий коллайдер города не изменён. Пришлите Console и скриншот входа.", "OK"); return; }
+            Undo.RecordObject(entrance.transform, "Automatic administration entrance");
+            entrance.transform.SetPositionAndRotation(chosen, Quaternion.LookRotation(inward));
+            entrance.destinationScene = Destination;
+            entrance.interactionDistance = 2.5f;
+            Transform oldSign = entrance.transform.Find("AdministrationSign");
+            if (oldSign != null) Undo.DestroyObjectImmediate(oldSign.gameObject);
+            GameObject sign = new GameObject("AdministrationSign");
+            Undo.RegisterCreatedObjectUndo(sign, "Administration sign");
+            sign.transform.SetParent(entrance.transform, false);
+            sign.transform.localPosition = new Vector3(0, 2.7f, 0.5f);
+            TextMesh label = sign.AddComponent<TextMesh>();
+            label.text = "АДМИНИСТРАЦИЯ\nРОГОВО";
+            label.anchor = TextAnchor.MiddleCenter;
+            label.alignment = TextAlignment.Center;
+            label.fontSize = 64;
+            label.characterSize = 0.045f;
+            label.color = new Color(1f, 0.88f, 0.5f);
+            label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            sign.GetComponent<MeshRenderer>().sharedMaterial = label.font.material;
+            var scenes = new System.Collections.Generic.List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
+            scenes.RemoveAll(item => item.path == Destination);
+            scenes.Add(new EditorBuildSettingsScene(Destination, true));
+            EditorBuildSettings.scenes = scenes.ToArray();
+            EditorUtility.SetDirty(entrance);
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Selection.activeGameObject = entrance.gameObject;
+            Debug.Log("[Dimari] Вход автоматически поставлен на свободную поверхность: " + chosen +
+                ". Добавлена вывеска, кабинет включён в Scene List, город сохранён. Проверка полного маршрута от улицы и ракурса камеры требуется в Play.");
+        }
+
         [MenuItem("Dimari/Администрация — создать вход в городе")]
         public static void CreateEntrance()
         {
