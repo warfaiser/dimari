@@ -141,6 +141,8 @@ namespace Dimari.Story
         private Transform _wheelLeftGrip;
         private Transform _wheelRightGrip;
         private bool _captainConversationActive;
+        private bool _hasReachedShip;
+        private bool _waitingForCaptainInteraction;
         private Vector3 _shipBasePos;
         private Quaternion _shipBaseRot;
 
@@ -1360,7 +1362,7 @@ namespace Dimari.Story
                 StartNewGame();
                 return;
             }
-            if (_cliffInteraction != null && _endingApproachMarker != null && _player != null && _hasGameStarted &&
+            if (!_hasReachedShip && _cliffInteraction != null && _endingApproachMarker != null && _player != null && _hasGameStarted &&
                 !_isMenuOpen && !_isPlayingEndingCutscene && !_isChapter2Reached && _hasPickedUpTablet &&
                 Vector3.Distance(_player.transform.position, _endingApproachMarker.position) <= endingMarkerRadius)
             {
@@ -2307,6 +2309,7 @@ namespace Dimari.Story
 
         private IEnumerator PlayCaptainConversation()
         {
+            _hasReachedShip = true;
             if (_player == null || _npcTransform == null || _shipTransform == null) yield break;
             // A short montage cut brings the hero aboard; no walking across open water.
             float fade = 0f;
@@ -2343,6 +2346,7 @@ namespace Dimari.Story
             if (controller != null) controller.enabled = true;
             _player.IsControlEnabled = true;
             if (_cameraController != null) _cameraController.BeginGameplayTransitionFromCutscene();
+            _waitingForCaptainInteraction = true;
             QuestStep captainQuest = new QuestStep { id = "talk_captain", title = "Поговорить с капитаном [E]." };
             questSteps.Add(captainQuest);
             ShowStatusToast("Нужно поговорить с капитаном. Подойдите и нажмите E.");
@@ -2363,6 +2367,7 @@ namespace Dimari.Story
                 _cameraController.IsCutsceneControlled = true;
                 _cameraController.UpdateCharacterMeshVisibility(false);
             }
+            _waitingForCaptainInteraction = false;
             captainQuest.isCompleted = true;
             meetingLocal = _shipTransform.InverseTransformPoint(_player.transform.position);
             if (heroCaptainQuestion == null)
@@ -2706,6 +2711,8 @@ namespace Dimari.Story
 
         public void StartNewGame()
         {
+            _hasReachedShip = false;
+            _waitingForCaptainInteraction = false;
             StopAllCoroutines();
             _isSailing = false;
             _endingFade = 0f;
@@ -3016,20 +3023,25 @@ namespace Dimari.Story
 
         private void DrawEndingApproachMarker()
         {
-            if (_endingApproachMarker == null || _player == null || _mainCam == null ||
-                !_hasGameStarted || _isMenuOpen || !_hasPickedUpTablet || _isTabletViewerOpen ||
-                _isPlayingEndingCutscene || _isChapter2Reached) return;
-            Vector3 screen = _mainCam.WorldToScreenPoint(_endingApproachMarker.position + Vector3.up * 1.2f);
-            float distance = Vector3.Distance(_player.transform.position, _endingApproachMarker.position);
+            if (_player == null || _mainCam == null || !_hasGameStarted || _isMenuOpen ||
+                !_hasPickedUpTablet || _isTabletViewerOpen || _isChapter2Reached) return;
+            bool captainTarget = _waitingForCaptainInteraction && _npcTransform != null;
+            if (_hasReachedShip && !captainTarget) return;
+            if (_isPlayingEndingCutscene && !captainTarget) return;
+            Transform target = captainTarget ? _npcTransform : _endingApproachMarker;
+            if (target == null) return;
+            Vector3 screen = _mainCam.WorldToScreenPoint(target.position + Vector3.up * 2f);
+            float distance = Vector3.Distance(_player.transform.position, target.position);
             GUIStyle markerStyle = new GUIStyle(GUI.skin.box)
             {
                 fontSize = 20, alignment = TextAnchor.MiddleCenter, richText = true
             };
             float x = screen.z > 0f ? Mathf.Clamp(screen.x, 150f, Screen.width - 150f) : Screen.width * 0.5f;
             float y = screen.z > 0f ? Mathf.Clamp(Screen.height - screen.y, 100f, Screen.height - 100f) : Screen.height - 140f;
-            string hint = screen.z > 0f ? "◆ К ОБРЫВУ" : "Повернитесь к метке";
+            string hint = screen.z > 0f ? (captainTarget ? "◆ КАПИТАН" : "◆ К ОБРЫВУ") : "Повернитесь к метке";
+            string action = captainTarget && distance <= 3.5f ? "[E] Поговорить" : "подойдите";
             GUI.Box(new Rect(x - 140f, y - 35f, 280f, 70f),
-                $"<color=#FFE18A>{hint}</color>\n<color=#FFFFFF>{distance:0} м — подойдите</color>", markerStyle);
+                $"<color=#FFE18A>{hint}</color>\n<color=#FFFFFF>{distance:0} м — {action}</color>", markerStyle);
         }
 
         private void OnGUI()
