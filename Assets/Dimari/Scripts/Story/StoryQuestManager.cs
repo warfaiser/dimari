@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using Dimari.Core;
 using Dimari.Player;
 using Dimari.Atmosphere;
@@ -46,6 +47,8 @@ namespace Dimari.Story
         public AudioClip heroCaptainQuestion;
         public AudioClip pirateCaptainAnswer;
         [Header("Плавание к Рогово")]
+        [Tooltip("Путь к сцене Demo City, добавленной в Build Settings. Настройка: Dimari/Город — привязать выбранную сцену.")]
+        public string cityScenePath = "";
         public bool playSailingCutscene = true;
         [Min(10f)] public float sailingDistance = 120f;
         [Tooltip("Необязательно: конечная точка плавания в мировых координатах. Маршрут должен проходить по свободной воде.")]
@@ -2163,7 +2166,10 @@ namespace Dimari.Story
 
             _captainConversationActive = false;
             _isPlayingEndingCutscene = false;
-            _isChapter2Reached = true;
+            if (!string.IsNullOrWhiteSpace(cityScenePath))
+                yield return ArriveInCity();
+            else
+                ShowStatusToast("Разговор завершён. Назначьте сцену города через меню Dimari.");
             SaveGame();
         }
 
@@ -2331,6 +2337,34 @@ namespace Dimari.Story
                 Debug.LogWarning("[Dimari] Не найдена отдельная лестница. Добавьте StairBottom и StairTop в префаб корабля для точного маршрута.");
             }
             if (_characterAnimator != null) _characterAnimator.SetFloat("Speed", 0f);
+            // Give control back for an explicit, proximity-gated interaction.
+            CharacterController controller = _player.GetComponent<CharacterController>();
+            _player.ResetWaterMotion();
+            if (controller != null) controller.enabled = true;
+            _player.IsControlEnabled = true;
+            if (_cameraController != null) _cameraController.BeginGameplayTransitionFromCutscene();
+            QuestStep captainQuest = new QuestStep { id = "talk_captain", title = "Поговорить с капитаном [E]." };
+            questSteps.Add(captainQuest);
+            ShowStatusToast("Нужно поговорить с капитаном. Подойдите и нажмите E.");
+            // Let a previous interact press expire before accepting the dialogue command.
+            yield return null;
+            while (true)
+            {
+                bool near = Vector3.Distance(_player.transform.position, _npcTransform.position) <= 3.5f;
+                _interactionPrompt = near ? "[E] Поговорить с капитаном" : "Подойдите к капитану, чтобы поговорить";
+                if (!_isMenuOpen && near && DimariInput.IsInteractPressed()) break;
+                yield return null;
+            }
+            _interactionPrompt = "";
+            _player.IsControlEnabled = false;
+            if (controller != null) controller.enabled = false;
+            if (_cameraController != null)
+            {
+                _cameraController.IsCutsceneControlled = true;
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+            captainQuest.isCompleted = true;
+            meetingLocal = _shipTransform.InverseTransformPoint(_player.transform.position);
             if (heroCaptainQuestion == null)
                 heroCaptainQuestion = Resources.Load<AudioClip>("Voice_Hero_CaptainQuestion");
             if (pirateCaptainAnswer == null)
@@ -2340,6 +2374,82 @@ namespace Dimari.Story
             const string answer = "Слышь, сухопутная крыса, ты на необитаемом острове! И скажу я тебе по-честному: повезло тебе, что старый морской волк бросил тут свой якорь. Прыгай на борт — и мы с тобой доплывём до города, чтоб меня черти драли!";
             yield return CaptainDialogueLine("Герой: " + question, heroCaptainQuestion, 7f, false, meetingLocal);
             yield return CaptainDialogueLine("Капитан: " + answer, pirateCaptainAnswer, 19f, true, meetingLocal);
+        }
+
+        private IEnumerator ArriveInCity()
+        {
+            if (!Application.CanStreamedLevelBeLoaded(cityScenePath))
+            {
+                Debug.LogError("[Dimari] Сцена города не найдена в Build Settings: " + cityScenePath);
+                ShowStatusToast("Сцена города не настроена. Лесная сцена сохранена.");
+                yield break;
+            }
+            _isPlayingEndingCutscene = true;
+            _player.IsControlEnabled = false;
+            _cameraController.IsCutsceneControlled = true;
+            float fade = 0f;
+            while (fade < 0.6f)
+            {
+                fade += Time.deltaTime;
+                _endingFade = Mathf.Clamp01(fade / 0.6f);
+                yield return null;
+            }
+            Scene oldScene = gameObject.scene;
+            yield return SceneManager.LoadSceneAsync(cityScenePath, LoadSceneMode.Additive);
+            Scene city = SceneManager.GetSceneByPath(cityScenePath);
+            Transform arrival = null;
+            foreach (GameObject root in city.GetRootGameObjects())
+                foreach (Transform child in root.GetComponentsInChildren<Transform>(true))
+                    if (child.name == "CityArrivalPoint") arrival = child;
+            if (arrival == null)
+            {
+                yield return SceneManager.UnloadSceneAsync(city);
+                _endingFade = 0f;
+                _isPlayingEndingCutscene = false;
+                _player.IsControlEnabled = true;
+                _cameraController.BeginGameplayTransitionFromCutscene();
+                Debug.LogError("[Dimari] В сцене города нужен CityArrivalPoint на безопасном месте улицы.");
+                yield break;
+            }
+            foreach (GameObject root in city.GetRootGameObjects())
+            {
+                foreach (Camera camera in root.GetComponentsInChildren<Camera>(true)) camera.enabled = false;
+                foreach (AudioListener listener in root.GetComponentsInChildren<AudioListener>(true)) listener.enabled = false;
+            }
+            Transform[] travellers = { transform, _player.transform, _mainCam.transform, _npcTransform };
+            foreach (Transform traveller in travellers)
+            {
+                if (traveller == null) continue;
+                traveller.SetParent(null, true);
+                SceneManager.MoveGameObjectToScene(traveller.gameObject, city);
+            }
+            CharacterController cc = _player.GetComponent<CharacterController>();
+            if (cc != null) cc.enabled = false;
+            _player.transform.SetPositionAndRotation(arrival.position, arrival.rotation);
+            if (_npcTransform != null)
+                _npcTransform.SetPositionAndRotation(arrival.position + arrival.right * 2f, arrival.rotation);
+            SceneManager.SetActiveScene(city);
+            yield return SceneManager.UnloadSceneAsync(oldScene);
+            _endingFade = 0f;
+            _isChapter2Reached = false;
+            _captainConversationActive = false;
+            questSteps.Clear();
+            questSteps.Add(new QuestStep { id = "city_administration", title = "Найти администрацию Рогово и узнать о Димарике." });
+            ShowMonologue("Капитан: Вот мы и на месте, сухопутный. Теперь ищи своего Димарика!", 5f);
+            float elapsed = 0f;
+            while (elapsed < 5f)
+            {
+                elapsed += Time.deltaTime;
+                Vector3 look = arrival.position + Vector3.up * 1.3f + arrival.forward * 3f;
+                Vector3 camera = arrival.position - arrival.forward * 5f + Vector3.up * 3f + arrival.right * 2f;
+                _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                yield return null;
+            }
+            _player.ResetWaterMotion();
+            if (cc != null) cc.enabled = true;
+            _player.IsControlEnabled = true;
+            _cameraController.BeginGameplayTransitionFromCutscene();
+            _isPlayingEndingCutscene = false;
         }
 
         private bool TryFindOpenWaterVoyage(out Vector3 start, out Vector3 end)
