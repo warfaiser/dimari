@@ -1410,8 +1410,65 @@ namespace Dimari.Story
             return new Vector3(pos.x, bestY, pos.z);
         }
 
+        private bool _chapterSelectionOpen;
+        private int _requestedChapter;
+        private static int _pendingChapter;
+        private const string ChapterForestScene = "Assets/Dimari/Scenes/ForestAwakening_TTFEL.unity";
+
+        private void LaunchChapter(int chapter)
+        {
+            if (!Application.CanStreamedLevelBeLoaded(ChapterForestScene))
+            { ShowStatusToast("Лесная сцена не найдена в Scene List."); return; }
+            string cityPath = string.IsNullOrWhiteSpace(cityScenePath)
+                ? "Assets/Dimari/Scenes/Chapter2_Rogovo.unity" : cityScenePath;
+            if (chapter == 2 && !Application.CanStreamedLevelBeLoaded(cityPath))
+            { ShowStatusToast("Добавьте Chapter2_Rogovo в Scene List."); return; }
+            // A fresh forest bootstrap supplies the player, camera and story systems.
+            // Do not call StartNewGame on a city manager: its forest dependencies were unloaded.
+            _pendingChapter = chapter;
+            Time.timeScale = 1f;
+            SceneManager.LoadScene(ChapterForestScene, LoadSceneMode.Single);
+        }
+
+        private IEnumerator LaunchCityChapter()
+        {
+            if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
+            if (_director != null) { _director.StopAllCoroutines(); _director.enabled = false; }
+            _hasGameStarted = true;
+            _hasReachedShip = true;
+            _waitingForCaptainInteraction = false;
+            _hasPickedUpTablet = true;
+            _isMenuOpen = false;
+            _isSettingsOpen = false;
+            _chapterSelectionOpen = false;
+            _isTabletViewerOpen = false;
+            _showHUD = true;
+            _cameraController.IsMenuCameraActive = false;
+            _cameraController.UpdateCharacterMeshVisibility(_cameraController.isFirstPerson);
+            _player.ResetWaterMotion();
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            if (string.IsNullOrWhiteSpace(cityScenePath)) cityScenePath = "Assets/Dimari/Scenes/Chapter2_Rogovo.unity";
+            yield return ArriveInCity();
+        }
+
         private void Update()
         {
+            if (_requestedChapter != 0)
+            {
+                int chapter = _requestedChapter;
+                _requestedChapter = 0;
+                LaunchChapter(chapter);
+                return;
+            }
+            if (_pendingChapter != 0 && _player != null && _cameraController != null && _mainCam != null)
+            {
+                int chapter = _pendingChapter;
+                _pendingChapter = 0;
+                if (chapter == 1) StartNewGame();
+                else StartCoroutine(LaunchCityChapter());
+                return;
+            }
             if (_newGameRequested)
             {
                 _newGameRequested = false;
@@ -3444,6 +3501,15 @@ namespace Dimari.Story
                 _logoMainStyle
             );
 
+            if (_chapterSelectionOpen && !_isSettingsOpen)
+            {
+                GUI.Label(new Rect(64f, 170f, 420f, 35f), "ВЫБОР ГЛАВЫ", _chapter2TitleStyle);
+                if (DrawMenuButton(new Rect(64f, 220f, 420f, 50f), "ГЛАВА 1 — ОСТРОВ", 0)) _requestedChapter = 1;
+                if (DrawMenuButton(new Rect(64f, 282f, 420f, 50f), "ГЛАВА 2 — РОГОВО", 1)) _requestedChapter = 2;
+                GUI.Label(new Rect(64f, 345f, 420f, 55f), "Запуск с начала главы. Текущий прогресс не переносится.", _settingsLabelStyle);
+                if (DrawMenuButton(new Rect(64f, 415f, 420f, 46f), "НАЗАД", 2)) _chapterSelectionOpen = false;
+                return;
+            }
             if (!_isSettingsOpen)
             {
                 float btnX = 64f;
@@ -3465,7 +3531,13 @@ namespace Dimari.Story
 
                 if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "НАЧАТЬ НОВУЮ ИГРУ", row))
                 {
-                    _newGameRequested = true;
+                    _requestedChapter = 1;
+                    return;
+                }
+                row++;
+                if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "ВЫБОР ГЛАВЫ", row))
+                {
+                    _chapterSelectionOpen = true;
                     return;
                 }
                 row++;
