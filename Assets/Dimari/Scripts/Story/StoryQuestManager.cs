@@ -1,0 +1,3106 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using UnityEngine;
+using Dimari.Core;
+using Dimari.Player;
+using Dimari.Atmosphere;
+using Dimari.Cinematics;
+
+namespace Dimari.Story
+{
+    /// <summary>
+    /// Управляет:
+    /// 1. Списком текущих задач в левом верхнем углу экрана («Текущие задачи:»):
+    ///    1. Найти рюкзак.
+    ///    2. Найти планшет.
+    ///    3. Выйти к воде и найти корабль (Глава 2: «Городок Димарика, Рогово»).
+    /// 2. Анимацией поднятия предметов (рюкзак на спину, планшет в руки с фотографией).
+    /// 3. Финальной кинематографичной КАТ-СЦЕНОЙ С АНИМАЦИЕЙ ХОДЬБЫ:
+    ///    Герой произносит: «Нужно идти к воде — возможно, там будет корабль»,
+    ///    сам идёт шагом (с 3D-анимацией ходьбы) к берегу/причалу у воды и видит качающийся на воде КОРАБЛЬ и стоящего у корабля ПЕРСОНАЖА!
+    /// </summary>
+    public class StoryQuestManager : MonoBehaviour
+    {
+        public static StoryQuestManager Instance { get; private set; }
+
+        [Serializable]
+        public class QuestStep
+        {
+            public string id;
+            public string title;
+            public bool isCompleted;
+        }
+
+        [Header("Текущие задачи (верхний левый угол)")]
+        public string questHeader = "Текущие задачи:";
+        public List<QuestStep> questSteps = new List<QuestStep>();
+
+        [Header("Корабль и капитан за штурвалом")]
+        [Tooltip("Назначьте основной префаб Stylized Pirate Ship (также для сборки игры).")]
+        public GameObject shipPrefab;
+        [Header("Большой корабль и разговор с капитаном")]
+        [Min(8.5f)] public float shipModelSize = 28f;
+        public bool humanSizedCaptain = true;
+        public AudioClip heroCaptainQuestion;
+        public AudioClip pirateCaptainAnswer;
+        [Header("Плавание к Рогово")]
+        public bool playSailingCutscene = true;
+        [Min(10f)] public float sailingDistance = 120f;
+        [Tooltip("Необязательно: конечная точка плавания в мировых координатах. Маршрут должен проходить по свободной воде.")]
+        public Transform sailingDestination;
+        private bool _isSailing;
+        private Vector3 _sailingStart;
+        private Vector3 _sailingEnd;
+        private float _sailingElapsed;
+        private const float SailingDuration = 78f;
+        [Header("Финал у обрыва")]
+        [Tooltip("Поставьте на безопасный край обрыва, Z направьте в море. Без маркера остаётся прежний финал у причала.")]
+        public Transform cliffArrivalPoint;
+        public float oceanLevel = -55f;
+        public float oceanSize = 2000f;
+        public Material oceanMaterial;
+        public Vector3 shipOffsetFromCliff = new Vector3(8f, 0f, 40f);
+        public AudioClip shoutForHelpVoice;
+        private InteractableStoryObject _cliffInteraction;
+        private Transform _endingApproachMarker;
+        private float _endingFade;
+        [Header("Метка перехода к обрыву")]
+        [Range(10f, 20f)] public float endingMarkerDistance = 15f;
+        [Min(0.5f)] public float endingMarkerRadius = 2f;
+        [Tooltip("Назначьте полный префаб Sky Protective Suit (также для сборки игры).")]
+        public GameObject captainPrefab;
+        [Tooltip("Необязательно: путь к пустому CaptainHelmAnchor внутри префаба корабля. Ось Z — направление взгляда, начало — под ногами.")]
+        public string captainHelmAnchorPath = "";
+        [Tooltip("Смещение ног от центра найденного штурвала в локальных метрах корня корабля.")]
+        public Vector3 captainOffsetFromWheel = new Vector3(0f, -1f, -0.65f);
+        [Tooltip("Запасная позиция ног на кормовой палубе, если отдельного штурвала в модели нет. Подстройте под модель.")]
+        public Vector3 captainFallbackPosition = new Vector3(0f, 1.8f, -2.2f);
+        public Vector3 captainFacingEuler = Vector3.zero;
+        [Header("Подогнанный капитан Sky Protective Suit / Stylized Pirate Ship")]
+        [Tooltip("Использовать проверенную расстановку капитана вместо поиска штурвала. Отключите для другого корабля или CaptainHelmAnchor.")]
+        public bool useFittedCaptainPlacement = true;
+        public Vector3 fittedCaptainPosition = new Vector3(0.182f, 2.124f, -1.563f);
+        [Min(0.01f)]
+        [Tooltip("Масштаб корня NPC относительно нормализованной модели, подобранный на корабле.")]
+        public float fittedCaptainScale = 0.3f;
+
+        public bool IsMenuOpen => _isMenuOpen;
+        public bool HasGameStarted => _hasGameStarted;
+
+        private string _currentSubtitle = "";
+        private float _subtitleTimer = 0f;
+        private float _subtitleAlpha = 0f;
+
+        private string _interactionPrompt = "";
+        private bool _showHUD = false;
+        private bool _isMenuOpen = true;
+        private bool _isSettingsOpen = false;
+        private bool _hasGameStarted = false;
+        private bool _isChapter2Reached = false;
+        private bool _isPlayingEndingCutscene = false;
+
+        // Состояние планшета и рюкзака
+        private bool _isTabletViewerOpen = false;
+        private bool _hasPickedUpTablet = false;
+        private bool _isHoldingTabletInHands = false;
+        private float _holdTabletBlend = 0f;
+        private bool _hasPickedUpBackpack = false;
+
+        // Состояние анимации поднятия предмета (рюкзака / планшета)
+        private bool _isPlayingPickupAnim = false;
+        private float _pickupAnimTimer = 0f;
+        private float _pickupAnimDuration = 1.25f;
+        private Vector3 _pickupTargetWorldPos;
+        private Transform _equippedBackpackTransform;
+        private Transform _equippedTabletTransform;
+        private Transform _characterChestBone;
+        private Transform _characterLeftHandBone;
+        private Transform _characterRightHandBone;
+        private Animator _characterAnimator;
+
+        // Объекты финала у воды: берег/причал, 3D-корабль на воде и NPC-капитан
+        private Transform _shoreStartPoint;
+        private Transform _pierWalkEndPoint;
+        private Transform _shipTransform;
+        private Transform _npcTransform;
+        private Vector3 _shipBasePos;
+        private Quaternion _shipBaseRot;
+
+        private string _statusToast = "";
+        private float _statusToastTimer = 0f;
+        private int _selectedMenuIndex = 0;
+
+        private bool _newGameRequested;
+
+        // Текстуры для UI и экрана планшета
+        [NonSerialized] private Texture2D _tabletPhotoTex;
+        [NonSerialized] private Texture2D _darkPanelTex;
+        [NonSerialized] private Texture2D _subtitlePanelTex;
+        [NonSerialized] private Texture2D _tabletBezelTex;
+        [NonSerialized] private Texture2D _menuLeftGradientTex;
+        [NonSerialized] private Texture2D _buttonHoverBarTex;
+        [NonSerialized] private Texture2D _accentBarTex;
+        [NonSerialized] private Texture2D _goldAccentTex;
+        [NonSerialized] private Texture2D _logoBoxTex;
+        [NonSerialized] private Texture2D _keyCapTex;
+
+        // Стили UI ([NonSerialized], чтобы Unity не сбрасывала их в чёрный 12px шрифт)
+        [NonSerialized] private bool _stylesInitialized = false;
+        [NonSerialized] private GUIStyle _logoMainStyle;
+        [NonSerialized] private GUIStyle _menuBtnStyle;
+        [NonSerialized] private GUIStyle _menuBtnHoverStyle;
+        [NonSerialized] private GUIStyle _questHeaderStyle;
+        [NonSerialized] private GUIStyle _questActiveStyle;
+        [NonSerialized] private GUIStyle _questDoneStyle;
+        [NonSerialized] private GUIStyle _subtitleSpeakerStyle;
+        [NonSerialized] private GUIStyle _subtitleStyle;
+        [NonSerialized] private GUIStyle _promptStyle;
+        [NonSerialized] private GUIStyle _bottomBarTextStyle;
+        [NonSerialized] private GUIStyle _keyCapStyle;
+        [NonSerialized] private GUIStyle _settingsLabelStyle;
+        [NonSerialized] private GUIStyle _chapter2TitleStyle;
+
+        private ForestPlayerController _player;
+        private ForestCameraController _cameraController;
+        private ForestAwakeningDirector _director;
+        private Camera _mainCam;
+
+        private void Awake()
+        {
+            Instance = this;
+            SetupDimariQuests();
+        }
+
+        private void Start()
+        {
+            _player = FindAnyObjectByType<ForestPlayerController>();
+            _cameraController = FindAnyObjectByType<ForestCameraController>();
+            _director = FindAnyObjectByType<ForestAwakeningDirector>();
+            _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+
+            CacheCharacterBones();
+            LoadTabletPhotoTexture();
+            SetupDimariQuests();
+            RemoveStumpAndSpawnUpdatedStoryProps();
+            OpenMainMenuOnStartup();
+        }
+
+        private void CacheCharacterBones()
+        {
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player == null) return;
+
+            _characterAnimator = _player.GetComponentInChildren<Animator>();
+            if (_characterAnimator != null && _characterAnimator.isHuman)
+            {
+                _characterChestBone = _characterAnimator.GetBoneTransform(HumanBodyBones.UpperChest);
+                if (_characterChestBone == null)
+                    _characterChestBone = _characterAnimator.GetBoneTransform(HumanBodyBones.Chest);
+                if (_characterChestBone == null)
+                    _characterChestBone = _characterAnimator.GetBoneTransform(HumanBodyBones.Spine);
+
+                _characterLeftHandBone = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftHand);
+                _characterRightHandBone = _characterAnimator.GetBoneTransform(HumanBodyBones.RightHand);
+            }
+        }
+
+        private Texture2D LoadTabletPhotoTexture()
+        {
+            if (_tabletPhotoTex != null) return _tabletPhotoTex;
+
+            _tabletPhotoTex = Resources.Load<Texture2D>("Dimari_Tablet_Photo");
+            if (_tabletPhotoTex != null) return _tabletPhotoTex;
+
+#if UNITY_EDITOR
+            string[] possibleAssetPaths = new string[]
+            {
+                "Assets/Dimari/Resources/Dimari_Tablet_Photo.jpg",
+                "Assets/77_zgLAwtLG4SHdKxcYs440fepSvHjQnqD4DSeWPWR5bn5onw9wJ-JoYUQJVeecHzUhO8YtyfQXi5WTlK02S4-D-.jpg"
+            };
+            foreach (string ap in possibleAssetPaths)
+            {
+                Texture2D loaded = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(ap);
+                if (loaded != null)
+                {
+                    _tabletPhotoTex = loaded;
+                    return _tabletPhotoTex;
+                }
+            }
+
+            string[] foundGuids = UnityEditor.AssetDatabase.FindAssets("77_zgLAwtLG4 t:Texture2D");
+            if (foundGuids != null && foundGuids.Length > 0)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(foundGuids[0]);
+                _tabletPhotoTex = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+                if (_tabletPhotoTex != null) return _tabletPhotoTex;
+            }
+#endif
+
+            try
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+                string[] candidateFiles = new string[]
+                {
+                    Path.Combine(projectRoot, "77_zgLAwtLG4SHdKxcYs440fepSvHjQnqD4DSeWPWR5bn5onw9wJ-JoYUQJVeecHzUhO8YtyfQXi5WTlK02S4-D-.jpg"),
+                    Path.Combine(Application.dataPath, "Dimari", "Resources", "Dimari_Tablet_Photo.jpg"),
+                    Path.Combine(Application.dataPath, "77_zgLAwtLG4SHdKxcYs440fepSvHjQnqD4DSeWPWR5bn5onw9wJ-JoYUQJVeecHzUhO8YtyfQXi5WTlK02S4-D-.jpg")
+                };
+
+                string fileToLoad = null;
+                foreach (string f in candidateFiles)
+                {
+                    if (File.Exists(f))
+                    {
+                        fileToLoad = f;
+                        break;
+                    }
+                }
+
+                if (fileToLoad == null)
+                {
+                    string[] rootJpgs = Directory.GetFiles(projectRoot, "*.jpg", SearchOption.TopDirectoryOnly);
+                    if (rootJpgs.Length > 0) fileToLoad = rootJpgs[0];
+                }
+
+                if (!string.IsNullOrEmpty(fileToLoad) && File.Exists(fileToLoad))
+                {
+                    byte[] bytes = File.ReadAllBytes(fileToLoad);
+                    Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                    if (ImageConversion.LoadImage(tex, bytes))
+                    {
+                        tex.name = "Dimari_Tablet_Photo_Runtime";
+                        tex.wrapMode = TextureWrapMode.Clamp;
+                        tex.filterMode = FilterMode.Bilinear;
+                        _tabletPhotoTex = tex;
+                        return _tabletPhotoTex;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[Dimari] Не удалось загрузить фото с диска: " + e.Message);
+            }
+
+            return _tabletPhotoTex;
+        }
+
+        public void InitializeDefaultQuests()
+        {
+            SetupDimariQuests();
+        }
+
+        public void SetupDimariQuests()
+        {
+            questHeader = "Текущие задачи:";
+            questSteps.Clear();
+            questSteps.Add(new QuestStep
+            {
+                id = "find_backpack",
+                title = "1. Найти рюкзак.",
+                isCompleted = false
+            });
+            questSteps.Add(new QuestStep
+            {
+                id = "find_tablet",
+                title = "2. Найти планшет.",
+                isCompleted = false
+            });
+            questSteps.Add(new QuestStep
+            {
+                id = "rogovo_exit",
+                title = "3. Выйти к воде и найти корабль (Глава 2).",
+                isCompleted = false
+            });
+        }
+
+        public void RemoveStumpAndSpawnUpdatedStoryProps()
+        {
+            if (_equippedBackpackTransform != null)
+            {
+                DestroyImmediate(_equippedBackpackTransform.gameObject);
+                _equippedBackpackTransform = null;
+            }
+            if (_equippedTabletTransform != null)
+            {
+                DestroyImmediate(_equippedTabletTransform.gameObject);
+                _equippedTabletTransform = null;
+            }
+            _hasPickedUpBackpack = false;
+            _hasPickedUpTablet = false;
+            _isHoldingTabletInHands = false;
+            _holdTabletBlend = 0f;
+            _isTabletViewerOpen = false;
+            _isPlayingEndingCutscene = false;
+
+            GameObject oldStoryRoot = GameObject.Find("Dimari_StoryObjects");
+            if (oldStoryRoot != null)
+            {
+                DestroyImmediate(oldStoryRoot);
+            }
+            GameObject oldStoryRootV2 = GameObject.Find("Dimari_StoryObjects_V2");
+            if (oldStoryRootV2 != null)
+            {
+                DestroyImmediate(oldStoryRootV2);
+            }
+
+            GameObject[] allObjects = FindObjectsByType<GameObject>();
+            foreach (GameObject go in allObjects)
+            {
+                if (go == null) continue;
+                string n = go.name.ToLowerInvariant();
+                if (n.Contains("storyprop_ancientstone") || n.Contains("pedestal") || n.Contains("turntable") || n.Contains("showcase_stump"))
+                {
+                    go.SetActive(false);
+                }
+            }
+
+            if (_player == null)
+            {
+                _player = FindAnyObjectByType<ForestPlayerController>();
+            }
+
+            Vector3 pPos = _player != null ? _player.transform.position : Vector3.zero;
+            Vector3 forward = _player != null ? _player.transform.forward : Vector3.forward;
+            Vector3 right = _player != null ? _player.transform.right : Vector3.right;
+            forward.y = 0f;
+            if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
+            forward.Normalize();
+            right = Vector3.Cross(Vector3.up, forward).normalized;
+
+            GameObject storyRoot = new GameObject("Dimari_StoryObjects_V2");
+
+            // =========================================================================
+            // 1. РЮКЗАК (Задача 1: Найти и поднять рюкзак)
+            // =========================================================================
+            Vector3 backpackPos = GetGroundPoint(pPos + forward * 4.5f + right * 1.4f, pPos.y);
+            GameObject backpackObj = new GameObject("Quest1_Backpack");
+            backpackObj.transform.SetParent(storyRoot.transform);
+            backpackObj.transform.position = backpackPos;
+            backpackObj.transform.rotation = Quaternion.Euler(0f, 32f, 0f);
+
+            bool spawnedAssetBag = TrySpawnMixallBagPrefab(backpackObj.transform);
+            if (!spawnedAssetBag)
+            {
+                CreateDetailedProceduralBackpack(backpackObj.transform);
+            }
+
+            BoxCollider bagTriggerCol = backpackObj.AddComponent<BoxCollider>();
+            bagTriggerCol.center = new Vector3(0f, 0.25f, 0f);
+            bagTriggerCol.size = new Vector3(0.65f, 0.55f, 0.55f);
+
+            InteractableStoryObject bagInteract = backpackObj.AddComponent<InteractableStoryObject>();
+            bagInteract.questStepId = "find_backpack";
+            bagInteract.objectTitle = "Потерянный рюкзак (Поднять)";
+            bagInteract.inspectMonologue = "«Отлично, мой рюкзак! Надену его на плечи. Внутри ключи и фляжка, но планшета тут нет — поищу его в траве дальше.»";
+
+            // =========================================================================
+            // 2. ПЛАНШЕТ С ФОТОГРАФИЕЙ (Задача 2: Найти и взять планшет)
+            // =========================================================================
+            Vector3 tabletPos = GetGroundPoint(pPos + forward * 9.5f - right * 2.1f, pPos.y);
+            GameObject tabletObj = new GameObject("Quest2_Tablet");
+            tabletObj.transform.SetParent(storyRoot.transform);
+            tabletObj.transform.position = tabletPos;
+            tabletObj.transform.rotation = Quaternion.Euler(0f, -24f, 0f);
+
+            CreateDetailedTabletModel(tabletObj.transform);
+
+            BoxCollider tabCol = tabletObj.AddComponent<BoxCollider>();
+            tabCol.center = new Vector3(0f, 0.12f, 0f);
+            tabCol.size = new Vector3(0.55f, 0.35f, 0.45f);
+
+            InteractableStoryObject tabletInteract = tabletObj.AddComponent<InteractableStoryObject>();
+            tabletInteract.questStepId = "find_tablet";
+            tabletInteract.objectTitle = "Планшет Димарика (Взять в руки)";
+            tabletInteract.inspectMonologue = "«А вот и планшет! На экране осталась наша вчерашняя фотка... Нужно идти к воде — возможно, там будет корабль.»";
+
+            // =========================================================================
+            // 3. ВЫХОД К ВОДЕ, ПРИЧАЛ, КОРАБЛЬ И NPC-ПЕРСОНАЖ (Задача 3 + Кат-сцена)
+            // =========================================================================
+            Vector3 shorePos = cliffArrivalPoint != null ? cliffArrivalPoint.position : GetGroundPoint(pPos + forward * 15.5f, pPos.y);
+            if (cliffArrivalPoint != null) forward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up).normalized;
+            if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
+            GameObject shoreEventRoot = new GameObject("Quest3_ShoreAndShip");
+            shoreEventRoot.transform.SetParent(storyRoot.transform);
+            shoreEventRoot.transform.position = shorePos;
+            shoreEventRoot.transform.rotation = Quaternion.LookRotation(forward, Vector3.up);
+
+            CreateShorelinePierShipAndNpc(shoreEventRoot.transform, shorePos, forward, right);
+
+            InteractableStoryObject shoreInteract = shoreEventRoot.AddComponent<InteractableStoryObject>();
+            shoreInteract.questStepId = "rogovo_exit";
+            shoreInteract.objectTitle = "Выход к воде (Подойти к кораблю)";
+            shoreInteract.inspectMonologue = "«Нужно идти к воде — возможно, там будет корабль. Постой-ка… Там у берега и правда стоит корабль!»";
+            shoreInteract.interactionDistance = 3.8f;
+            _cliffInteraction = cliffArrivalPoint != null ? shoreInteract : null;
+            if (cliffArrivalPoint != null)
+            {
+                GameObject marker = new GameObject("Dimari_CliffCutsceneApproachMarker");
+                marker.transform.SetParent(storyRoot.transform, true);
+                Vector3 approachForward = _player != null ? _player.transform.forward : Vector3.forward;
+                approachForward = Vector3.ProjectOnPlane(approachForward, Vector3.up).normalized;
+                // Measure from the tablet's original ground position, not the player spawn.
+                marker.transform.position = GetGroundPoint(
+                    tabletPos + approachForward * endingMarkerDistance, tabletPos.y);
+                _endingApproachMarker = marker.transform;
+                // The cliff is a cinematic destination, not an interactable across the map.
+                shoreInteract.enabled = false;
+            }
+        }
+
+        /// <summary>
+        /// Создаёт береговой деревянный пирс у воды, водную гладь залива,
+        /// большой 3D-корабль (из Asset Store или сборный 3D-корабль) и NPC-персонажа на причале у корабля!
+        /// </summary>
+        private void CreateShorelinePierShipAndNpc(Transform root, Vector3 shorePos, Vector3 forward, Vector3 right)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material woodMat = new Material(litShader);
+            SetMatColor(woodMat, new Color(0.36f, 0.24f, 0.14f, 1f));
+            if (woodMat.HasProperty("_Smoothness")) woodMat.SetFloat("_Smoothness", 0.2f);
+
+            Material darkWoodMat = new Material(litShader);
+            SetMatColor(darkWoodMat, new Color(0.24f, 0.15f, 0.09f, 1f));
+
+            Material waterMat = new Material(litShader);
+            SetMatColor(waterMat, new Color(0.08f, 0.32f, 0.42f, 0.94f));
+            if (waterMat.HasProperty("_Smoothness")) waterMat.SetFloat("_Smoothness", 0.92f);
+            if (waterMat.HasProperty("_Metallic")) waterMat.SetFloat("_Metallic", 0.15f);
+
+            // Точка начала и конца прохода героя в кат-сцене
+            GameObject startPt = new GameObject("CutsceneWalkStart");
+            startPt.transform.SetParent(root, false);
+            startPt.transform.localPosition = new Vector3(0f, 0f, -0.5f);
+            _shoreStartPoint = startPt.transform;
+
+            GameObject endPt = new GameObject("CutsceneWalkEnd");
+            endPt.transform.SetParent(root, false);
+            endPt.transform.localPosition = new Vector3(0f, 0.18f, 5.2f);
+            _pierWalkEndPoint = endPt.transform;
+            if (cliffArrivalPoint != null)
+            {
+                startPt.transform.localPosition = new Vector3(0f, 0f, -4f);
+                endPt.transform.localPosition = Vector3.zero;
+                startPt.transform.position = GetGroundPoint(startPt.transform.position, shorePos.y);
+                CreateSurroundingOcean(waterMat);
+            }
+
+            // 1. Деревянный причал (мостик к воде, по которому идёт герой в кат-сцене)
+            GameObject pierRoot = new GameObject("WoodenShorePier");
+            pierRoot.transform.SetParent(root, false);
+
+            // Настил причала (длина 7 метров) с коллайдером, чтобы персонаж шёл по нему!
+            GameObject pierDeck = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            pierDeck.name = "PierWalkwayDeck";
+            pierDeck.transform.SetParent(pierRoot.transform, false);
+            pierDeck.transform.localPosition = new Vector3(0f, 0.12f, 3.2f);
+            pierDeck.transform.localScale = new Vector3(2.2f, 0.16f, 7.0f);
+            pierDeck.GetComponent<Renderer>().sharedMaterial = woodMat;
+
+            // Сваи причала
+            for (int i = 0; i < 4; i++)
+            {
+                float z = 0.6f + i * 1.8f;
+                CreatePart(PrimitiveType.Cylinder, $"PierPost_L_{i}", pierRoot.transform,
+                    new Vector3(-1.05f, 0.25f, z), Quaternion.identity, new Vector3(0.16f, 0.85f, 0.16f), darkWoodMat);
+                CreatePart(PrimitiveType.Cylinder, $"PierPost_R_{i}", pierRoot.transform,
+                    new Vector3(1.05f, 0.25f, z), Quaternion.identity, new Vector3(0.16f, 0.85f, 0.16f), darkWoodMat);
+            }
+
+            // Фонарный столб у входа на причал
+            CreatePart(PrimitiveType.Cylinder, "LanternPost", pierRoot.transform,
+                new Vector3(-1.15f, 1.15f, 0.4f), Quaternion.identity, new Vector3(0.10f, 1.15f, 0.10f), darkWoodMat);
+
+            Material lanternGlowMat = new Material(litShader);
+            Color warmLight = new Color(1.0f, 0.82f, 0.38f, 1f);
+            SetMatColor(lanternGlowMat, warmLight);
+            if (lanternGlowMat.HasProperty("_EmissionColor"))
+            {
+                lanternGlowMat.EnableKeyword("_EMISSION");
+                lanternGlowMat.SetColor("_EmissionColor", warmLight * 2.5f);
+            }
+            CreatePart(PrimitiveType.Sphere, "PierLanternBulb", pierRoot.transform,
+                new Vector3(-1.15f, 2.35f, 0.4f), Quaternion.identity, new Vector3(0.28f, 0.28f, 0.28f), lanternGlowMat);
+
+            // 2. Зеркальная водная гладь перед причалом (под кораблём)
+            CreatePart(PrimitiveType.Cube, "ShoreWaterBay", root,
+                new Vector3(0f, -0.22f, 19.0f), Quaternion.identity, new Vector3(46f, 0.15f, 30f), waterMat);
+
+            if (cliffArrivalPoint != null)
+            {
+                pierRoot.SetActive(false);
+                Transform bay = root.Find("ShoreWaterBay");
+                if (bay != null) bay.gameObject.SetActive(false);
+            }
+
+            // 3. 3D-КОРАБЛЬ НА ВОДЕ У ПРИЧАЛА
+            GameObject shipObj = new GameObject("Dimari_WaterShip");
+            shipObj.transform.SetParent(root, false);
+            shipObj.transform.localPosition = new Vector3(1.2f, -0.05f, 12.2f);
+            shipObj.transform.localRotation = Quaternion.Euler(0f, -68f, 0f);
+
+            if (cliffArrivalPoint != null)
+            {
+                Vector3 seaPosition = root.TransformPoint(shipOffsetFromCliff);
+                seaPosition.y = oceanLevel;
+                shipObj.transform.position = seaPosition;
+            }
+
+            bool spawnedAssetShip = TrySpawnAssetStoreShipPrefab(shipObj.transform);
+            if (!spawnedAssetShip)
+            {
+                CreateDetailedProceduralShip(shipObj.transform);
+            }
+
+            _shipTransform = shipObj.transform;
+            _shipBasePos = _shipTransform.localPosition;
+            _shipBaseRot = _shipTransform.localRotation;
+
+            // 4. NPC-ПЕРСОНАЖ (Капитан / Проводник), ожидающий у трапа корабля на конце причала
+            GameObject npcObj = new GameObject("Dimari_ShipCaptain_NPC");
+            npcObj.transform.SetParent(shipObj.transform, false);
+            PositionCaptainAtHelm(npcObj.transform, shipObj.transform);
+
+            SpawnNpcCharacterAtShip(npcObj.transform);
+            _npcTransform = npcObj.transform;
+
+            BoxCollider triggerCol = root.gameObject.AddComponent<BoxCollider>();
+            triggerCol.center = new Vector3(0f, 1.0f, 0.5f);
+            triggerCol.size = new Vector3(2.8f, 2.2f, 2.8f);
+        }
+
+        private void CreateSurroundingOcean(Material fallback)
+        {
+            GameObject ocean = GameObject.CreatePrimitive(PrimitiveType.Plane);
+            ocean.name = "Dimari_SurroundingOcean";
+            ocean.transform.SetParent(_shoreStartPoint.parent, true);
+            ocean.transform.position = new Vector3(cliffArrivalPoint.position.x, oceanLevel, cliffArrivalPoint.position.z);
+            ocean.transform.rotation = Quaternion.identity;
+            ocean.transform.localScale = new Vector3(Mathf.Max(100f, oceanSize) / 10f, 1f, Mathf.Max(100f, oceanSize) / 10f);
+            ocean.GetComponent<Renderer>().sharedMaterial = oceanMaterial != null ? oceanMaterial : fallback;
+            Destroy(ocean.GetComponent<Collider>());
+        }
+
+        private void PrepareShipModel(GameObject instance)
+        {
+            instance.name = "AssetStore_Ship_Model";
+            instance.transform.localPosition = Vector3.zero;
+            instance.transform.localRotation = Quaternion.identity;
+            instance.transform.localScale = Vector3.one;
+            UpgradeRenderersToURP(instance, new Color(0.35f, 0.24f, 0.16f, 1f));
+            NormalizeModelBoundsOnGround(instance.transform, Mathf.Max(8.5f, shipModelSize));
+        }
+
+        private void PositionCaptainAtHelm(Transform captain, Transform ship)
+        {
+            if (useFittedCaptainPlacement)
+            {
+                captain.localPosition = fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f);
+                captain.localRotation = Quaternion.Euler(captainFacingEuler);
+                captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
+                return;
+            }
+            captain.localScale = Vector3.one;
+            Transform model = ship.Find("AssetStore_Ship_Model");
+            Transform anchor = null;
+            if (model != null && !string.IsNullOrWhiteSpace(captainHelmAnchorPath))
+                anchor = model.Find(captainHelmAnchorPath);
+            if (anchor == null)
+            {
+                foreach (Transform part in ship.GetComponentsInChildren<Transform>(true))
+                    if (part.name == "CaptainHelmAnchor") { anchor = part; break; }
+            }
+            if (anchor != null)
+            {
+                captain.position = anchor.position;
+                captain.rotation = anchor.rotation;
+                return;
+            }
+
+            Transform wheel = null;
+            foreach (Transform part in ship.GetComponentsInChildren<Transform>(true))
+            {
+                string name = part.name.ToLowerInvariant().Replace("_", "").Replace(" ", "");
+                if (name.Contains("shipwheel") || name.Contains("steeringwheel") ||
+                    name.Contains("helm") || name == "wheel" || name.Contains("штурвал"))
+                { wheel = part; break; }
+            }
+            captain.localPosition = wheel != null
+                ? ship.InverseTransformPoint(wheel.position) + captainOffsetFromWheel
+                : captainFallbackPosition;
+            captain.localRotation = Quaternion.Euler(captainFacingEuler);
+            if (wheel == null)
+                Debug.LogWarning("[Dimari] Штурвал не выделен в модели: подстройте Captain Fallback Position или добавьте CaptainHelmAnchor на палубу за штурвалом.");
+        }
+
+        /// <summary>
+        /// Автоматически ищет импортированный пользователем 3D-корабль или лодку из Unity Asset Store
+        /// (например: Boats Pack, Stylized Pirate Ship, Sailing Ships, Simple Boats and Tankers).
+        /// </summary>
+        private bool TrySpawnAssetStoreShipPrefab(Transform parent)
+        {
+            if (shipPrefab != null)
+            {
+                PrepareShipModel(Instantiate(shipPrefab, parent));
+                return true;
+            }
+#if UNITY_EDITOR
+            string[] filters = new string[] { "t:Prefab", "t:Model" };
+            GameObject bestShip = null;
+            string bestPath = null;
+            int bestScore = -1;
+
+            foreach (string filter in filters)
+            {
+                string[] guids = UnityEditor.AssetDatabase.FindAssets(filter);
+                foreach (string guid in guids)
+                {
+                    string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(path)) continue;
+                    string lower = path.ToLowerInvariant();
+
+                    if (lower.Contains("toby") || lower.Contains("starterassets") ||
+                        lower.Contains("character controller") || lower.Contains("human basic") ||
+                        lower.Contains("mixall") || lower.Contains("bags"))
+                    {
+                        continue;
+                    }
+
+                    bool isShipOrBoat =
+                        lower.Contains("ship") ||
+                        lower.Contains("boat") ||
+                        lower.Contains("vessel") ||
+                        lower.Contains("sailboat") ||
+                        lower.Contains("pirate") ||
+                        lower.Contains("cruiser") ||
+                        lower.Contains("tanker") ||
+                        lower.Contains("yacht") ||
+                        lower.Contains("galleon");
+
+                    if (!isShipOrBoat) continue;
+                    string assetName = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+                    if (assetName.Contains("barrel") || assetName.Contains("cannon") ||
+                        assetName.Contains("crate") || assetName.Contains("wheel") ||
+                        assetName.Contains("sail") && !assetName.Contains("ship") ||
+                        assetName.Contains("mast") || assetName.Contains("rope")) continue;
+                    // A package folder named Ship does not make every prop a ship.
+                    if (!assetName.Contains("ship") && !assetName.Contains("boat") &&
+                        !assetName.Contains("galleon") && !assetName.Contains("vessel")) continue;
+
+                    GameObject candidate = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    if (candidate == null) continue;
+                    if (candidate.GetComponentInChildren<MeshRenderer>() == null) continue;
+
+                    int score = 10;
+                    if (lower.EndsWith(".prefab")) score += 40;
+                    if (lower.Contains("ship")) score += 30;
+                    if (lower.Contains("boat")) score += 20;
+                    if (lower.Contains("pirate")) score += 150;
+                    if (lower.Contains("stylized") && lower.Contains("pirate")) score += 100;
+                    if (System.IO.Path.GetFileNameWithoutExtension(path).ToLowerInvariant().Contains("ship")) score += 80;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestShip = candidate;
+                        bestPath = path;
+                    }
+                }
+            }
+
+            if (bestShip != null)
+            {
+                GameObject instance = Instantiate(bestShip, parent);
+                PrepareShipModel(instance);
+
+                Debug.Log($"[Dimari] Загружен 3D-корабль из ассета: {bestPath}");
+                return true;
+            }
+#endif
+            return false;
+        }
+
+        /// <summary>
+        /// Строит детализированный 3D-корабль на воде (корпус, палуба, борта, рубка капитана со светящимися иллюминаторами,
+        /// мачта с парусом, труба и спасательные круги), если внешний ассет корабля ещё не импортирован.
+        /// </summary>
+        private void CreateDetailedProceduralShip(Transform parent)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material hullDarkMat = new Material(litShader);
+            SetMatColor(hullDarkMat, new Color(0.18f, 0.12f, 0.08f, 1f));
+            if (hullDarkMat.HasProperty("_Smoothness")) hullDarkMat.SetFloat("_Smoothness", 0.30f);
+
+            Material hullRedBottomMat = new Material(litShader);
+            SetMatColor(hullRedBottomMat, new Color(0.45f, 0.14f, 0.11f, 1f));
+
+            Material deckWoodMat = new Material(litShader);
+            SetMatColor(deckWoodMat, new Color(0.46f, 0.32f, 0.19f, 1f));
+
+            Material cabinWhiteMat = new Material(litShader);
+            SetMatColor(cabinWhiteMat, new Color(0.86f, 0.84f, 0.78f, 1f));
+
+            Material sailCanvasMat = new Material(litShader);
+            SetMatColor(sailCanvasMat, new Color(0.92f, 0.89f, 0.81f, 1f));
+
+            Material windowGlowMat = new Material(litShader);
+            Color warmGlow = new Color(1.0f, 0.84f, 0.42f, 1f);
+            SetMatColor(windowGlowMat, warmGlow);
+            if (windowGlowMat.HasProperty("_EmissionColor"))
+            {
+                windowGlowMat.EnableKeyword("_EMISSION");
+                windowGlowMat.SetColor("_EmissionColor", warmGlow * 2.2f);
+            }
+
+            // 1. Нижняя подводная часть корпуса (киль)
+            CreatePart(PrimitiveType.Capsule, "ShipKeelHull", parent,
+                new Vector3(0f, 0.15f, 0f), Quaternion.Euler(90f, 0f, 0f), new Vector3(2.6f, 4.4f, 0.9f), hullRedBottomMat);
+
+            // 2. Основной надводный корпус корабля
+            CreatePart(PrimitiveType.Cube, "ShipMainHull", parent,
+                new Vector3(0f, 0.65f, 0f), Quaternion.identity, new Vector3(2.7f, 0.85f, 6.8f), hullDarkMat);
+
+            // 3. Заострённый нос корабля (форштевень) и корма
+            CreatePart(PrimitiveType.Cube, "ShipBowFront", parent,
+                new Vector3(0f, 0.72f, 3.6f), Quaternion.Euler(0f, 45f, 0f), new Vector3(1.9f, 0.85f, 1.9f), hullDarkMat);
+
+            // 4. Деревянная палуба
+            CreatePart(PrimitiveType.Cube, "ShipWoodDeck", parent,
+                new Vector3(0f, 1.10f, 0.1f), Quaternion.identity, new Vector3(2.55f, 0.08f, 6.6f), deckWoodMat);
+
+            // 5. Бортики / фальшборт по краям палубы
+            CreatePart(PrimitiveType.Cube, "PortRail", parent,
+                new Vector3(-1.28f, 1.32f, 0f), Quaternion.identity, new Vector3(0.08f, 0.38f, 6.4f), hullDarkMat);
+            CreatePart(PrimitiveType.Cube, "StarboardRail", parent,
+                new Vector3(1.28f, 1.32f, 0f), Quaternion.identity, new Vector3(0.08f, 0.38f, 6.4f), hullDarkMat);
+
+            // 6. Капитанская рубка / каюта
+            CreatePart(PrimitiveType.Cube, "CaptainCabin", parent,
+                new Vector3(0f, 1.75f, -0.9f), Quaternion.identity, new Vector3(1.85f, 1.25f, 2.4f), cabinWhiteMat);
+            CreatePart(PrimitiveType.Cube, "CabinRoof", parent,
+                new Vector3(0f, 2.42f, -0.9f), Quaternion.identity, new Vector3(2.05f, 0.12f, 2.6f), hullDarkMat);
+
+            // Светящиеся окна капитанской рубки
+            CreatePart(PrimitiveType.Cube, "CabinFrontWindow", parent,
+                new Vector3(0f, 1.95f, 0.31f), Quaternion.identity, new Vector3(1.35f, 0.42f, 0.04f), windowGlowMat);
+            CreatePart(PrimitiveType.Cube, "CabinSideWindowL", parent,
+                new Vector3(-0.93f, 1.92f, -0.8f), Quaternion.identity, new Vector3(0.04f, 0.38f, 1.4f), windowGlowMat);
+            CreatePart(PrimitiveType.Cube, "CabinSideWindowR", parent,
+                new Vector3(0.93f, 1.92f, -0.8f), Quaternion.identity, new Vector3(0.04f, 0.38f, 1.4f), windowGlowMat);
+
+            // 7. Высокая мачта, рея и парус
+            CreatePart(PrimitiveType.Cylinder, "MainMast", parent,
+                new Vector3(0f, 3.4f, 1.35f), Quaternion.identity, new Vector3(0.14f, 2.3f, 0.14f), deckWoodMat);
+            CreatePart(PrimitiveType.Cylinder, "CrossYardTop", parent,
+                new Vector3(0f, 4.8f, 1.35f), Quaternion.Euler(0f, 0f, 90f), new Vector3(0.09f, 1.6f, 0.09f), deckWoodMat);
+            CreatePart(PrimitiveType.Cube, "MainSailCanvas", parent,
+                new Vector3(0f, 3.65f, 1.45f), Quaternion.Euler(6f, 0f, 0f), new Vector3(2.8f, 2.1f, 0.06f), sailCanvasMat);
+
+            // 8. Пароходная труба позади рубки
+            CreatePart(PrimitiveType.Cylinder, "SmokeFunnel", parent,
+                new Vector3(0f, 2.95f, -1.55f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.36f, 0.65f, 0.36f), hullRedBottomMat);
+        }
+
+        /// <summary>
+        /// Спавнит 3D-персонажа (NPC-капитана / выжившего) у корабля:
+        /// Сначала ищет любого нового персонажа, скачанного с Asset Store, иначе использует модель персонажа с анимацией дыхания Idle.
+        /// </summary>
+        private void SpawnNpcCharacterAtShip(Transform parent)
+        {
+            GameObject bestCharPrefab = captainPrefab;
+#if UNITY_EDITOR
+            int bestScore = -1;
+
+            string[] guids = UnityEditor.AssetDatabase.FindAssets("t:Prefab");
+            foreach (string guid in guids)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path)) continue;
+                string lower = path.ToLowerInvariant();
+
+                if (lower.Contains("toby") || lower.Contains("mixall") || lower.Contains("bags")) continue;
+
+                // Ищем сторонних 3D-персонажей или модели людей
+                bool isExternalChar =
+                    lower.Contains("modular character") ||
+                    lower.Contains("human_male") ||
+                    lower.Contains("rpg character") ||
+                    lower.Contains("chuby") ||
+                    lower.Contains("protective_suit") ||
+                    lower.Contains("protective suit") ||
+                    lower.Contains("protectivesuit") ||
+                    lower.Contains("didimo") ||
+                    lower.Contains("villager") ||
+                    lower.Contains("npc") ||
+                    lower.Contains("playerarmature");
+
+                if (!isExternalChar) continue;
+
+                GameObject candidate = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                if (candidate == null) continue;
+                if (candidate.GetComponentInChildren<SkinnedMeshRenderer>() == null) continue;
+
+                int score = 10;
+                // Приоритет отдаём новому скачанному человеческому персонажу (не дефолтному PlayerArmature)
+                if (!lower.Contains("playerarmature") && !lower.Contains("starterassets"))
+                {
+                    score += 80;
+                }
+
+                if (lower.Contains("protective")) score += 250;
+                if (captainPrefab == null && score > bestScore)
+                {
+                    bestScore = score;
+                    bestCharPrefab = candidate;
+                }
+            }
+
+#endif
+            if (bestCharPrefab != null)
+            {
+                GameObject npcInstance = Instantiate(bestCharPrefab, parent);
+                npcInstance.name = "ShipCaptain_Character";
+                npcInstance.transform.localPosition = Vector3.zero;
+                npcInstance.transform.localRotation = Quaternion.identity;
+                npcInstance.transform.localScale = Vector3.one;
+
+                NormalizeModelBoundsOnGround(npcInstance.transform, 1.8f);
+                foreach (Rigidbody body in npcInstance.GetComponentsInChildren<Rigidbody>(true))
+                {
+                    body.isKinematic = true;
+                    body.useGravity = false;
+                }
+                foreach (Collider collider in npcInstance.GetComponentsInChildren<Collider>(true))
+                    collider.enabled = false;
+                foreach (Camera camera in npcInstance.GetComponentsInChildren<Camera>(true))
+                    camera.enabled = false;
+                foreach (AudioListener listener in npcInstance.GetComponentsInChildren<AudioListener>(true))
+                    listener.enabled = false;
+
+                // Отключаем на NPC любые контроллеры управления игроком, чтобы он спокойно стоял на пирсе
+                MonoBehaviour[] scripts = npcInstance.GetComponentsInChildren<MonoBehaviour>(true);
+                foreach (MonoBehaviour mb in scripts)
+                {
+                    if (mb == null) continue;
+                    string typeName = mb.GetType().Name;
+                    if (typeName.Contains("Player") || typeName.Contains("Controller") || typeName.Contains("Input"))
+                    {
+                        mb.enabled = false;
+                    }
+                }
+
+                UpgradeRenderersToURP(npcInstance, new Color(0.22f, 0.30f, 0.38f, 1f));
+
+                // Если у игрока есть AnimatorController — назначаем его и NPC, чтобы он дышал в стойке Idle
+                Animator npcAnim = npcInstance.GetComponentInChildren<Animator>();
+                if (npcAnim != null && _characterAnimator != null && _characterAnimator.runtimeAnimatorController != null)
+                {
+                    npcAnim.runtimeAnimatorController = _characterAnimator.runtimeAnimatorController;
+                    npcAnim.applyRootMotion = false;
+                }
+                return;
+            }
+            // Запасной силуэт капитана в плаще у фонаря, если префаб не найден
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            Material coatMat = new Material(litShader);
+            SetMatColor(coatMat, new Color(0.16f, 0.22f, 0.28f, 1f));
+            CreatePart(PrimitiveType.Capsule, "NpcBody", parent,
+                new Vector3(0f, 0.9f, 0f), Quaternion.identity, new Vector3(0.45f, 0.85f, 0.35f), coatMat);
+            CreatePart(PrimitiveType.Sphere, "NpcHead", parent,
+                new Vector3(0f, 1.65f, 0f), Quaternion.identity, new Vector3(0.28f, 0.28f, 0.28f), coatMat);
+        }
+
+        private bool TrySpawnMixallBagPrefab(Transform parent)
+        {
+#if UNITY_EDITOR
+            string[] searchFilters = new string[] { "t:Prefab", "t:Model" };
+            GameObject chosenBagAsset = null;
+            string chosenPath = null;
+            int bestScore = -1;
+
+            foreach (string filter in searchFilters)
+            {
+                string[] guids = UnityEditor.AssetDatabase.FindAssets(filter);
+                foreach (string guid in guids)
+                {
+                    string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(path)) continue;
+                    string lowerPath = path.ToLowerInvariant();
+
+                    if (lowerPath.Contains("toby") ||
+                        lowerPath.Contains("starterassets") ||
+                        lowerPath.Contains("character controller") ||
+                        lowerPath.Contains("human basic") ||
+                        lowerPath.Contains("footsteps") ||
+                        lowerPath.Contains("nature - essentials"))
+                    {
+                        continue;
+                    }
+
+                    bool isMixallBag =
+                        lowerPath.Contains("mixall") ||
+                        lowerPath.Contains("bags - props") ||
+                        lowerPath.Contains("bags-props") ||
+                        lowerPath.Contains("/bags/") ||
+                        lowerPath.Contains("backpack") ||
+                        lowerPath.Contains("rucksack") ||
+                        Path.GetFileNameWithoutExtension(lowerPath).StartsWith("bag");
+
+                    if (!isMixallBag) continue;
+
+                    GameObject candidate = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    if (candidate == null) continue;
+                    if (candidate.GetComponentInChildren<MeshRenderer>() == null &&
+                        candidate.GetComponentInChildren<SkinnedMeshRenderer>() == null)
+                    {
+                        continue;
+                    }
+
+                    int score = 10;
+                    if (lowerPath.EndsWith(".prefab")) score += 50;
+                    if (lowerPath.Contains("mixall") || lowerPath.Contains("bags")) score += 40;
+                    if (lowerPath.Contains("bag_01") || lowerPath.Contains("bag_1") || lowerPath.Contains("backpack")) score += 20;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        chosenBagAsset = candidate;
+                        chosenPath = path;
+                    }
+                }
+            }
+
+            if (chosenBagAsset != null)
+            {
+                GameObject instance = Instantiate(chosenBagAsset, parent);
+                instance.name = "Mixall_Backpack_Model";
+                instance.transform.localPosition = Vector3.zero;
+                instance.transform.localRotation = Quaternion.identity;
+                instance.transform.localScale = Vector3.one;
+
+                UpgradeRenderersToURP(instance, new Color(0.28f, 0.35f, 0.24f, 1f));
+                NormalizeModelBoundsOnGround(instance.transform, 0.56f);
+
+                Debug.Log($"[Dimari] Загружен 3D-рюкзак из ассета: {chosenPath}");
+                return true;
+            }
+#endif
+            return false;
+        }
+
+        private void UpgradeRenderersToURP(GameObject root, Color fallbackColor)
+        {
+            Shader urpLit = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            if (urpLit == null) return;
+
+            Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+            foreach (Renderer r in renderers)
+            {
+                if (r == null || r.sharedMaterials == null) continue;
+                Material[] mats = r.sharedMaterials;
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    Material oldMat = mats[i];
+                    if (oldMat == null)
+                    {
+                        Material fallback = new Material(urpLit);
+                        SetMatColor(fallback, fallbackColor);
+                        mats[i] = fallback;
+                        continue;
+                    }
+
+                    string shaderName = oldMat.shader != null ? oldMat.shader.name : "";
+                    if (!shaderName.Contains("Universal Render Pipeline") && !shaderName.Contains("URP") && !shaderName.Contains("Toby"))
+                    {
+                        Texture mainTex = oldMat.HasProperty("_BaseMap") ? oldMat.GetTexture("_BaseMap") : null;
+                        if (mainTex == null && oldMat.HasProperty("_MainTex")) mainTex = oldMat.GetTexture("_MainTex");
+
+                        Texture bumpTex = oldMat.HasProperty("_BumpMap") ? oldMat.GetTexture("_BumpMap") : null;
+                        Texture metallicTex = oldMat.HasProperty("_MetallicGlossMap") ? oldMat.GetTexture("_MetallicGlossMap") : null;
+                        Texture occlusionTex = oldMat.HasProperty("_OcclusionMap") ? oldMat.GetTexture("_OcclusionMap") : null;
+
+                        Color col = Color.white;
+                        if (oldMat.HasProperty("_BaseColor")) col = oldMat.GetColor("_BaseColor");
+                        else if (oldMat.HasProperty("_Color")) col = oldMat.GetColor("_Color");
+
+                        Material newMat = new Material(urpLit);
+                        newMat.name = oldMat.name + "_URP";
+                        SetMatColor(newMat, col);
+
+                        if (mainTex != null)
+                        {
+                            if (newMat.HasProperty("_BaseMap")) newMat.SetTexture("_BaseMap", mainTex);
+                            if (newMat.HasProperty("_MainTex")) newMat.SetTexture("_MainTex", mainTex);
+                        }
+                        if (bumpTex != null && newMat.HasProperty("_BumpMap"))
+                        {
+                            newMat.SetTexture("_BumpMap", bumpTex);
+                            newMat.EnableKeyword("_NORMALMAP");
+                        }
+                        if (metallicTex != null && newMat.HasProperty("_MetallicGlossMap"))
+                        {
+                            newMat.SetTexture("_MetallicGlossMap", metallicTex);
+                        }
+                        if (occlusionTex != null && newMat.HasProperty("_OcclusionMap"))
+                        {
+                            newMat.SetTexture("_OcclusionMap", occlusionTex);
+                        }
+                        if (newMat.HasProperty("_Smoothness"))
+                        {
+                            newMat.SetFloat("_Smoothness", 0.25f);
+                        }
+
+                        mats[i] = newMat;
+                    }
+                }
+                r.sharedMaterials = mats;
+            }
+        }
+
+        private void NormalizeModelBoundsOnGround(Transform modelTransform, float targetSize)
+        {
+            Renderer[] renderers = modelTransform.GetComponentsInChildren<Renderer>(true);
+            if (renderers == null || renderers.Length == 0) return;
+
+            Bounds b = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                b.Encapsulate(renderers[i].bounds);
+            }
+
+            float maxDim = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
+            if (maxDim > 0.001f && (maxDim < 0.15f || maxDim > 1.2f))
+            {
+                float scaleFactor = targetSize / maxDim;
+                modelTransform.localScale *= scaleFactor;
+
+                b = renderers[0].bounds;
+                for (int i = 1; i < renderers.Length; i++)
+                {
+                    b.Encapsulate(renderers[i].bounds);
+                }
+            }
+
+            float groundY = modelTransform.parent != null ? modelTransform.parent.position.y : modelTransform.position.y;
+            float offsetY = groundY - b.min.y + 0.02f;
+            modelTransform.position += new Vector3(0f, offsetY, 0f);
+        }
+
+        private void CreateDetailedProceduralBackpack(Transform parent)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material oliveFabricMat = new Material(litShader);
+            SetMatColor(oliveFabricMat, new Color(0.22f, 0.29f, 0.19f, 1f));
+            if (oliveFabricMat.HasProperty("_Smoothness")) oliveFabricMat.SetFloat("_Smoothness", 0.18f);
+
+            Material darkFlapMat = new Material(litShader);
+            SetMatColor(darkFlapMat, new Color(0.15f, 0.19f, 0.13f, 1f));
+            if (darkFlapMat.HasProperty("_Smoothness")) darkFlapMat.SetFloat("_Smoothness", 0.22f);
+
+            Material strapLeatherMat = new Material(litShader);
+            SetMatColor(strapLeatherMat, new Color(0.26f, 0.17f, 0.10f, 1f));
+            if (strapLeatherMat.HasProperty("_Smoothness")) strapLeatherMat.SetFloat("_Smoothness", 0.35f);
+
+            Material buckleMetalMat = new Material(litShader);
+            SetMatColor(buckleMetalMat, new Color(0.75f, 0.72f, 0.62f, 1f));
+            if (buckleMetalMat.HasProperty("_Smoothness")) buckleMetalMat.SetFloat("_Smoothness", 0.75f);
+
+            GameObject root = new GameObject("DetailedBackpack_Mesh");
+            root.transform.SetParent(parent, false);
+            root.transform.localPosition = new Vector3(0f, 0.04f, 0f);
+            root.transform.localRotation = Quaternion.Euler(18f, 0f, -8f);
+
+            CreatePart(PrimitiveType.Capsule, "MainPackBody", root.transform,
+                new Vector3(0f, 0.24f, 0f), Quaternion.identity, new Vector3(0.36f, 0.26f, 0.24f), oliveFabricMat);
+            CreatePart(PrimitiveType.Cylinder, "PackBottomBase", root.transform,
+                new Vector3(0f, 0.09f, 0f), Quaternion.identity, new Vector3(0.35f, 0.06f, 0.23f), darkFlapMat);
+            CreatePart(PrimitiveType.Sphere, "TopHoodFlap", root.transform,
+                new Vector3(0f, 0.42f, 0.01f), Quaternion.Euler(10f, 0f, 0f), new Vector3(0.37f, 0.16f, 0.26f), darkFlapMat);
+            CreatePart(PrimitiveType.Capsule, "FrontPocket", root.transform,
+                new Vector3(0f, 0.19f, 0.12f), Quaternion.identity, new Vector3(0.25f, 0.14f, 0.10f), darkFlapMat);
+            CreatePart(PrimitiveType.Cylinder, "LeftSidePocket", root.transform,
+                new Vector3(-0.18f, 0.17f, 0f), Quaternion.Euler(0f, 0f, 8f), new Vector3(0.09f, 0.10f, 0.12f), darkFlapMat);
+            CreatePart(PrimitiveType.Cylinder, "RightSidePocket", root.transform,
+                new Vector3(0.18f, 0.17f, 0f), Quaternion.Euler(0f, 0f, -8f), new Vector3(0.09f, 0.10f, 0.12f), darkFlapMat);
+            CreatePart(PrimitiveType.Cube, "LeftFrontStrap", root.transform,
+                new Vector3(-0.08f, 0.30f, 0.135f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.032f, 0.22f, 0.018f), strapLeatherMat);
+            CreatePart(PrimitiveType.Cube, "RightFrontStrap", root.transform,
+                new Vector3(0.08f, 0.30f, 0.135f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.032f, 0.22f, 0.018f), strapLeatherMat);
+            CreatePart(PrimitiveType.Cube, "LeftBuckle", root.transform,
+                new Vector3(-0.08f, 0.25f, 0.145f), Quaternion.identity, new Vector3(0.045f, 0.035f, 0.02f), buckleMetalMat);
+            CreatePart(PrimitiveType.Cube, "RightBuckle", root.transform,
+                new Vector3(0.08f, 0.25f, 0.145f), Quaternion.identity, new Vector3(0.045f, 0.035f, 0.02f), buckleMetalMat);
+            CreatePart(PrimitiveType.Capsule, "ShoulderStrapLeft", root.transform,
+                new Vector3(-0.09f, 0.25f, -0.12f), Quaternion.Euler(8f, 0f, 0f), new Vector3(0.055f, 0.18f, 0.04f), strapLeatherMat);
+            CreatePart(PrimitiveType.Capsule, "ShoulderStrapRight", root.transform,
+                new Vector3(0.09f, 0.25f, -0.12f), Quaternion.Euler(8f, 0f, 0f), new Vector3(0.055f, 0.18f, 0.04f), strapLeatherMat);
+            CreatePart(PrimitiveType.Cylinder, "TopCarryLoop", root.transform,
+                new Vector3(0f, 0.49f, -0.04f), Quaternion.Euler(0f, 0f, 90f), new Vector3(0.03f, 0.06f, 0.03f), strapLeatherMat);
+        }
+
+        private void CreateDetailedTabletModel(Transform parent)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+            Material bodyMat = new Material(litShader);
+            SetMatColor(bodyMat, new Color(0.14f, 0.15f, 0.18f, 1f));
+            if (bodyMat.HasProperty("_Smoothness")) bodyMat.SetFloat("_Smoothness", 0.72f);
+
+            Material bezelMat = new Material(litShader);
+            SetMatColor(bezelMat, new Color(0.05f, 0.05f, 0.06f, 1f));
+            if (bezelMat.HasProperty("_Smoothness")) bezelMat.SetFloat("_Smoothness", 0.85f);
+
+            Texture2D photoTex = LoadTabletPhotoTexture();
+
+            Material screenMat = new Material(litShader);
+            if (photoTex != null)
+            {
+                SetMatColor(screenMat, Color.white);
+                if (screenMat.HasProperty("_BaseMap")) screenMat.SetTexture("_BaseMap", photoTex);
+                if (screenMat.HasProperty("_MainTex")) screenMat.SetTexture("_MainTex", photoTex);
+                if (screenMat.HasProperty("_EmissionColor"))
+                {
+                    screenMat.EnableKeyword("_EMISSION");
+                    if (screenMat.HasProperty("_EmissionMap")) screenMat.SetTexture("_EmissionMap", photoTex);
+                    screenMat.SetColor("_EmissionColor", new Color(0.90f, 0.90f, 0.90f, 1f));
+                }
+            }
+            else
+            {
+                Color screenGlow = new Color(0.18f, 0.78f, 0.96f, 1f);
+                SetMatColor(screenMat, screenGlow);
+                if (screenMat.HasProperty("_EmissionColor"))
+                {
+                    screenMat.EnableKeyword("_EMISSION");
+                    screenMat.SetColor("_EmissionColor", screenGlow * 1.4f);
+                }
+            }
+
+            CreatePart(PrimitiveType.Cube, "TabletChassis", parent,
+                new Vector3(0f, 0.04f, 0f), Quaternion.identity, new Vector3(0.36f, 0.020f, 0.25f), bodyMat);
+
+            CreatePart(PrimitiveType.Cube, "TabletBezel", parent,
+                new Vector3(0f, 0.051f, 0f), Quaternion.identity, new Vector3(0.34f, 0.008f, 0.23f), bezelMat);
+
+            CreatePart(PrimitiveType.Cube, "TabletGlowScreen", parent,
+                new Vector3(0f, 0.055f, 0f), Quaternion.Euler(0f, 180f, 0f), new Vector3(0.31f, 0.006f, 0.20f), screenMat);
+        }
+
+        private GameObject CreatePart(PrimitiveType type, string partName, Transform parent, Vector3 localPos, Quaternion localRot, Vector3 localScale, Material mat)
+        {
+            GameObject part = GameObject.CreatePrimitive(type);
+            part.name = partName;
+            part.transform.SetParent(parent, false);
+            part.transform.localPosition = localPos;
+            part.transform.localRotation = localRot;
+            part.transform.localScale = localScale;
+            Collider c = part.GetComponent<Collider>();
+            if (c != null) DestroyImmediate(c);
+            Renderer r = part.GetComponent<Renderer>();
+            if (r != null) r.sharedMaterial = mat;
+            return part;
+        }
+
+        private static void SetMatColor(Material m, Color c)
+        {
+            if (m == null) return;
+            if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", c);
+            if (m.HasProperty("_Color")) m.SetColor("_Color", c);
+        }
+
+        private Vector3 GetGroundPoint(Vector3 pos, float fallbackY)
+        {
+            RaycastHit[] hits = Physics.RaycastAll(pos + Vector3.up * 20f, Vector3.down, 60f, ~0, QueryTriggerInteraction.Ignore);
+            float bestY = fallbackY;
+            bool found = false;
+            foreach (RaycastHit h in hits)
+            {
+                if (h.transform.CompareTag("Player")) continue;
+                if (h.transform.GetComponentInParent<InteractableStoryObject>() != null) continue;
+                if (!found || h.point.y > bestY)
+                {
+                    bestY = h.point.y;
+                    found = true;
+                }
+            }
+            return new Vector3(pos.x, bestY, pos.z);
+        }
+
+        private void Update()
+        {
+            if (_newGameRequested)
+            {
+                _newGameRequested = false;
+                StartNewGame();
+                return;
+            }
+            if (_cliffInteraction != null && _endingApproachMarker != null && _player != null && _hasGameStarted &&
+                !_isMenuOpen && !_isPlayingEndingCutscene && !_isChapter2Reached && _hasPickedUpTablet &&
+                Vector3.Distance(_player.transform.position, _endingApproachMarker.position) <= endingMarkerRadius)
+            {
+                CompleteQuestStep("rogovo_exit", "");
+            }
+            if (_statusToastTimer > 0f)
+            {
+                _statusToastTimer -= Time.unscaledDeltaTime;
+            }
+
+            if (_isSailing && _shipTransform != null)
+            {
+                _sailingElapsed += Time.deltaTime;
+                _shipBasePos = Vector3.Lerp(_sailingStart, _sailingEnd,
+                    Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(_sailingElapsed / SailingDuration)));
+            }
+
+            // Плавное покачивание корабля на волнах у причала
+            if (_shipTransform != null)
+            {
+                float t = Time.time;
+                float bobY = Mathf.Sin(t * 1.4f) * 0.08f;
+                float rollZ = Mathf.Sin(t * 1.1f) * 2.2f;
+                float pitchX = Mathf.Cos(t * 0.9f) * 1.4f;
+                _shipTransform.localPosition = _shipBasePos + new Vector3(0f, bobY, 0f);
+                _shipTransform.localRotation = _shipBaseRot * Quaternion.Euler(pitchX, 0f, rollZ);
+            }
+
+            float targetHoldBlend = (_hasPickedUpTablet && _isHoldingTabletInHands && !_isPlayingPickupAnim && !_isTabletViewerOpen && !_isPlayingEndingCutscene) ? 1.0f : 0.0f;
+            _holdTabletBlend = Mathf.MoveTowards(_holdTabletBlend, targetHoldBlend, Time.deltaTime * 5.0f);
+
+            if (_isMenuOpen)
+            {
+                Time.timeScale = 1.0f;
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+
+                if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
+                if (_director != null && _director.enabled)
+                {
+                    _director.StopAllCoroutines();
+                    _director.enabled = false;
+                }
+            }
+            else if (_isTabletViewerOpen)
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+
+                if (DimariInput.IsInteractPressed() || DimariInput.IsSkipOrContinuePressed() || IsTabKeyPressed())
+                {
+                    PutTabletInBackpack();
+                }
+                else if (IsToggleHoldHandsKeyPressed())
+                {
+                    KeepTabletInHands();
+                }
+            }
+            else if (_hasPickedUpTablet && !_isPlayingEndingCutscene)
+            {
+                if (IsTabKeyPressed())
+                {
+                    OpenTabletViewer();
+                }
+                else if (IsToggleHoldHandsKeyPressed() || (_isHoldingTabletInHands && IsRightMousePressed()))
+                {
+                    if (_isHoldingTabletInHands)
+                    {
+                        PutTabletInBackpack();
+                    }
+                    else
+                    {
+                        KeepTabletInHands();
+                    }
+                }
+            }
+
+            if (DimariInput.IsPauseMenuPressed())
+            {
+                if (_isTabletViewerOpen)
+                {
+                    PutTabletInBackpack();
+                }
+                else if (_isSettingsOpen)
+                {
+                    _isSettingsOpen = false;
+                }
+                else if (_isMenuOpen && _hasGameStarted)
+                {
+                    ResumeFromPause();
+                }
+                else if (!_isMenuOpen)
+                {
+                    OpenPauseMenu();
+                }
+            }
+
+            if (DimariInput.IsQuickSavePressed() && _hasGameStarted)
+            {
+                SaveGame();
+            }
+
+            if (_isMenuOpen && DimariInput.IsSettingsShortcutPressed())
+            {
+                _isSettingsOpen = !_isSettingsOpen;
+            }
+
+            if (_subtitleTimer > 0f)
+            {
+                _subtitleTimer -= Time.deltaTime;
+                _subtitleAlpha = Mathf.MoveTowards(_subtitleAlpha, 1f, Time.deltaTime * 5f);
+            }
+            else
+            {
+                _subtitleAlpha = Mathf.MoveTowards(_subtitleAlpha, 0f, Time.deltaTime * 2.5f);
+            }
+        }
+
+        private bool IsTabKeyPressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Keyboard.current != null &&
+                UnityEngine.InputSystem.Keyboard.current.tabKey.wasPressedThisFrame)
+            {
+                return true;
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetKeyDown(KeyCode.Tab))
+            {
+                return true;
+            }
+#endif
+            return false;
+        }
+
+        private bool IsToggleHoldHandsKeyPressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Keyboard.current != null &&
+                (UnityEngine.InputSystem.Keyboard.current.tKey.wasPressedThisFrame ||
+                 UnityEngine.InputSystem.Keyboard.current.qKey.wasPressedThisFrame ||
+                 UnityEngine.InputSystem.Keyboard.current.rKey.wasPressedThisFrame))
+            {
+                return true;
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetKeyDown(KeyCode.T) || Input.GetKeyDown(KeyCode.Q) || Input.GetKeyDown(KeyCode.R))
+            {
+                return true;
+            }
+#endif
+            return false;
+        }
+
+        private bool IsRightMousePressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null &&
+                UnityEngine.InputSystem.Mouse.current.rightButton.wasPressedThisFrame)
+            {
+                return true;
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetMouseButtonDown(1))
+            {
+                return true;
+            }
+#endif
+            return false;
+        }
+
+        public void OpenTabletViewer()
+        {
+            _isTabletViewerOpen = true;
+            if (_player != null) _player.IsControlEnabled = false;
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+
+        public void CloseTabletViewer()
+        {
+            PutTabletInBackpack();
+        }
+
+        public void PutTabletInBackpack()
+        {
+            _isTabletViewerOpen = false;
+            _isHoldingTabletInHands = false;
+            _holdTabletBlend = 0f;
+
+            if (_equippedTabletTransform != null)
+            {
+                _equippedTabletTransform.gameObject.SetActive(false);
+            }
+
+            if (!_isMenuOpen && !_isPlayingEndingCutscene)
+            {
+                if (_player != null) _player.IsControlEnabled = true;
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+            }
+
+            ShowStatusToast("Планшет убран в рюкзак ([TAB] — фото, [T] — в руки)");
+        }
+
+        public void KeepTabletInHands()
+        {
+            _isTabletViewerOpen = false;
+            _isHoldingTabletInHands = true;
+            _holdTabletBlend = 1.0f;
+
+            if (_equippedTabletTransform != null)
+            {
+                _equippedTabletTransform.gameObject.SetActive(true);
+            }
+
+            if (!_isMenuOpen && !_isPlayingEndingCutscene)
+            {
+                if (_player != null) _player.IsControlEnabled = true;
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+            }
+
+            ShowStatusToast("Планшет в руках ([T] или ПКМ — убрать в рюкзак)");
+        }
+
+        private void LateUpdate()
+        {
+            if (!_isMenuOpen)
+            {
+                if (_isPlayingPickupAnim)
+                {
+                    ApplyHumanoidPickupPose();
+                }
+                else if (_holdTabletBlend > 0.001f)
+                {
+                    ApplyHumanoidHoldTabletInBothHandsPose(_holdTabletBlend);
+                }
+
+                UpdateEquippedItemsOnCharacter();
+                return;
+            }
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_mainCam == null) _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+            if (_player == null || _mainCam == null) return;
+
+            if (_player.visualModelRoot != null)
+            {
+                _player.visualModelRoot.localPosition = Vector3.zero;
+                _player.visualModelRoot.localRotation = Quaternion.identity;
+            }
+
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+            if (_cameraController != null)
+            {
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+
+            // ForestCameraController is the sole camera writer when available.
+            if (_cameraController != null) return;
+            float swayX = 0f;
+            float swayY = 0f;
+
+            Vector3 pPos = _player.transform.position;
+            Vector3 pForward = _player.transform.forward;
+            pForward.y = 0f;
+            if (pForward.sqrMagnitude < 0.01f) pForward = Vector3.forward;
+            pForward.Normalize();
+
+            Vector3 camPos = pPos + pForward * 2.65f + Vector3.up * (1.28f + swayY) + _player.transform.right * swayX;
+            Vector3 characterChest = pPos + Vector3.up * 1.18f;
+
+            Quaternion lookDirect = Quaternion.LookRotation(characterChest - camPos, Vector3.up);
+            Quaternion lookWithCharacterOnRight = lookDirect * Quaternion.Euler(0f, -20f, 0f);
+
+            _mainCam.transform.position = camPos;
+            _mainCam.transform.rotation = lookWithCharacterOnRight;
+
+            Vector3 vp = _mainCam.WorldToViewportPoint(characterChest);
+            if (vp.x < 0.5f)
+            {
+                _mainCam.transform.rotation = lookDirect * Quaternion.Euler(0f, +20f, 0f);
+            }
+        }
+
+        private void AimArmAtWorldTargets(Transform upperArm, Transform lowerArm, Transform hand, Vector3 elbowTarget, Vector3 handTarget, float weight)
+        {
+            if (upperArm == null || lowerArm == null || hand == null || weight <= 0.001f) return;
+
+            Vector3 curUpperDir = lowerArm.position - upperArm.position;
+            Vector3 desUpperDir = elbowTarget - upperArm.position;
+            if (curUpperDir.sqrMagnitude > 0.0001f && desUpperDir.sqrMagnitude > 0.0001f)
+            {
+                Quaternion upperRotDelta = Quaternion.FromToRotation(curUpperDir.normalized, desUpperDir.normalized);
+                upperArm.rotation = Quaternion.Slerp(Quaternion.identity, upperRotDelta, weight) * upperArm.rotation;
+            }
+
+            Vector3 curLowerDir = hand.position - lowerArm.position;
+            Vector3 desLowerDir = handTarget - lowerArm.position;
+            if (curLowerDir.sqrMagnitude > 0.0001f && desLowerDir.sqrMagnitude > 0.0001f)
+            {
+                Quaternion lowerRotDelta = Quaternion.FromToRotation(curLowerDir.normalized, desLowerDir.normalized);
+                lowerArm.rotation = Quaternion.Slerp(Quaternion.identity, lowerRotDelta, weight) * lowerArm.rotation;
+            }
+        }
+
+        private void ApplyHumanoidHoldTabletInBothHandsPose(float weight)
+        {
+            if (_player == null) return;
+            if (_characterAnimator == null) CacheCharacterBones();
+            if (_characterAnimator == null || !_characterAnimator.isHuman) return;
+
+            Vector3 charForward = _player.transform.forward;
+            Vector3 charRight = _player.transform.right;
+            Vector3 charUp = Vector3.up;
+
+            Transform chest = _characterChestBone != null
+                ? _characterChestBone
+                : _characterAnimator.GetBoneTransform(HumanBodyBones.Chest);
+
+            Vector3 chestPos = chest != null ? chest.position : (_player.transform.position + charUp * 1.24f);
+
+            Vector3 tabletCenter = chestPos + charForward * 0.36f + charUp * 0.06f;
+
+            Vector3 leftElbowTarget = chestPos + charForward * 0.16f - charRight * 0.24f - charUp * 0.12f;
+            Vector3 rightElbowTarget = chestPos + charForward * 0.16f + charRight * 0.24f - charUp * 0.12f;
+
+            Vector3 leftHandGrip = tabletCenter - charRight * 0.16f;
+            Vector3 rightHandGrip = tabletCenter + charRight * 0.16f;
+
+            Transform lUpperArm = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftUpperArm);
+            Transform lLowerArm = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftLowerArm);
+            Transform lHand = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftHand);
+
+            Transform rUpperArm = _characterAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+            Transform rLowerArm = _characterAnimator.GetBoneTransform(HumanBodyBones.RightLowerArm);
+            Transform rHand = _characterAnimator.GetBoneTransform(HumanBodyBones.RightHand);
+
+            AimArmAtWorldTargets(lUpperArm, lLowerArm, lHand, leftElbowTarget, leftHandGrip, weight);
+            AimArmAtWorldTargets(rUpperArm, rLowerArm, rHand, rightElbowTarget, rightHandGrip, weight);
+
+            Transform neck = _characterAnimator.GetBoneTransform(HumanBodyBones.Neck);
+            if (neck != null)
+            {
+                neck.rotation = Quaternion.AngleAxis(15f * weight, charRight) * neck.rotation;
+            }
+        }
+
+        private void ApplyHumanoidPickupPose()
+        {
+            if (_player == null) return;
+            if (_characterAnimator == null) CacheCharacterBones();
+            if (_characterAnimator == null || !_characterAnimator.isHuman) return;
+
+            float norm = Mathf.Clamp01(_pickupAnimTimer / _pickupAnimDuration);
+            float bendWeight = Mathf.Sin(norm * Mathf.PI);
+            bendWeight = Mathf.SmoothStep(0f, 1f, bendWeight);
+
+            Vector3 charRight = _player.transform.right;
+            Vector3 charForward = _player.transform.forward;
+
+            Transform hips = _characterAnimator.GetBoneTransform(HumanBodyBones.Hips);
+            Transform spine = _characterAnimator.GetBoneTransform(HumanBodyBones.Spine);
+            Transform chest = _characterAnimator.GetBoneTransform(HumanBodyBones.Chest);
+            Transform upperChest = _characterAnimator.GetBoneTransform(HumanBodyBones.UpperChest);
+            Transform neck = _characterAnimator.GetBoneTransform(HumanBodyBones.Neck);
+            Transform rUpperArm = _characterAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+            Transform rLowerArm = _characterAnimator.GetBoneTransform(HumanBodyBones.RightLowerArm);
+            Transform rHand = _characterAnimator.GetBoneTransform(HumanBodyBones.RightHand);
+            Transform lUpperLeg = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftUpperLeg);
+            Transform lLowerLeg = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftLowerLeg);
+            Transform rUpperLeg = _characterAnimator.GetBoneTransform(HumanBodyBones.RightUpperLeg);
+            Transform rLowerLeg = _characterAnimator.GetBoneTransform(HumanBodyBones.RightLowerLeg);
+
+            if (hips != null)
+            {
+                hips.position += Vector3.down * (0.26f * bendWeight);
+            }
+            if (lUpperLeg != null) lUpperLeg.rotation = Quaternion.AngleAxis(-34f * bendWeight, charRight) * lUpperLeg.rotation;
+            if (rUpperLeg != null) rUpperLeg.rotation = Quaternion.AngleAxis(-38f * bendWeight, charRight) * rUpperLeg.rotation;
+            if (lLowerLeg != null) lLowerLeg.rotation = Quaternion.AngleAxis(62f * bendWeight, charRight) * lLowerLeg.rotation;
+            if (rLowerLeg != null) rLowerLeg.rotation = Quaternion.AngleAxis(66f * bendWeight, charRight) * rLowerLeg.rotation;
+
+            if (spine != null) spine.rotation = Quaternion.AngleAxis(34f * bendWeight, charRight) * spine.rotation;
+            if (chest != null) chest.rotation = Quaternion.AngleAxis(26f * bendWeight, charRight) * chest.rotation;
+            if (upperChest != null) upperChest.rotation = Quaternion.AngleAxis(16f * bendWeight, charRight) * upperChest.rotation;
+            if (neck != null) neck.rotation = Quaternion.AngleAxis(18f * bendWeight, charRight) * neck.rotation;
+
+            Vector3 chestPos = chest != null ? chest.position : (_player.transform.position + Vector3.up * 1.0f);
+            Vector3 elbowHint = chestPos + charForward * 0.20f + charRight * 0.22f - Vector3.up * 0.25f;
+            Vector3 reachPoint = _pickupTargetWorldPos + Vector3.up * 0.12f;
+            AimArmAtWorldTargets(rUpperArm, rLowerArm, rHand, elbowHint, reachPoint, bendWeight);
+        }
+
+        private void UpdateEquippedItemsOnCharacter()
+        {
+            if (_player == null) return;
+            if (_characterChestBone == null) CacheCharacterBones();
+
+            if (_equippedBackpackTransform != null)
+            {
+                Transform anchor = _characterChestBone != null ? _characterChestBone : _player.transform;
+                Vector3 backForward = anchor.forward;
+                backForward.y = 0f;
+                if (backForward.sqrMagnitude < 0.01f) backForward = _player.transform.forward;
+                backForward.Normalize();
+
+                Vector3 chestPos = _characterChestBone != null
+                    ? _characterChestBone.position
+                    : (_player.transform.position + Vector3.up * 1.22f);
+
+                _equippedBackpackTransform.position = chestPos - backForward * 0.22f - Vector3.up * 0.16f;
+                _equippedBackpackTransform.rotation = Quaternion.LookRotation(-backForward, Vector3.up);
+            }
+
+            if (_equippedTabletTransform != null)
+            {
+                if (_isTabletViewerOpen || _isPlayingEndingCutscene)
+                {
+                    _equippedTabletTransform.gameObject.SetActive(false);
+                }
+                else if (_isPlayingPickupAnim && _characterRightHandBone != null)
+                {
+                    _equippedTabletTransform.gameObject.SetActive(true);
+                    _equippedTabletTransform.position = _characterRightHandBone.position + _player.transform.forward * 0.08f;
+                    _equippedTabletTransform.rotation = Quaternion.LookRotation(_player.transform.forward, Vector3.up);
+                }
+                else if (_isHoldingTabletInHands)
+                {
+                    _equippedTabletTransform.gameObject.SetActive(true);
+
+                    Vector3 charForward = _player.transform.forward;
+                    Vector3 charUp = Vector3.up;
+
+                    Vector3 handsCenter;
+                    if (_characterLeftHandBone != null && _characterRightHandBone != null)
+                    {
+                        handsCenter = (_characterLeftHandBone.position + _characterRightHandBone.position) * 0.5f + charForward * 0.04f + charUp * 0.04f;
+                    }
+                    else
+                    {
+                        Vector3 chestPos = _characterChestBone != null
+                            ? _characterChestBone.position
+                            : (_player.transform.position + charUp * 1.28f);
+                        handsCenter = chestPos + charForward * 0.36f + charUp * 0.06f;
+                    }
+
+                    _equippedTabletTransform.position = handsCenter;
+                    Vector3 tabletTopEdge = (charForward + charUp * 0.90f).normalized;
+                    Vector3 tabletScreenNormal = (-charForward * 0.67f + charUp * 0.74f).normalized;
+                    _equippedTabletTransform.rotation = Quaternion.LookRotation(tabletTopEdge, tabletScreenNormal);
+                }
+                else
+                {
+                    _equippedTabletTransform.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        private IEnumerator PlayPickupItemRoutine(string stepId, InteractableStoryObject targetInteractable)
+        {
+            _isPlayingPickupAnim = true;
+            _pickupAnimTimer = 0f;
+            _interactionPrompt = "";
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+
+            bool wasFirstPerson = _cameraController != null && _cameraController.isFirstPerson;
+            if (_cameraController != null)
+            {
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+
+            Transform itemTransform = targetInteractable != null ? targetInteractable.transform : null;
+            if (itemTransform != null)
+            {
+                _pickupTargetWorldPos = itemTransform.position;
+
+                Collider[] cols = itemTransform.GetComponentsInChildren<Collider>(true);
+                foreach (Collider c in cols) c.enabled = false;
+                targetInteractable.enabled = false;
+            }
+
+            Vector3 startForward = _player != null ? _player.transform.forward : Vector3.forward;
+            Vector3 toItem = itemTransform != null && _player != null
+                ? (itemTransform.position - _player.transform.position)
+                : startForward;
+            toItem.y = 0f;
+            Quaternion targetRot = toItem.sqrMagnitude > 0.01f
+                ? Quaternion.LookRotation(toItem.normalized, Vector3.up)
+                : (_player != null ? _player.transform.rotation : Quaternion.identity);
+
+            bool attachedToHandOrBack = false;
+
+            while (_pickupAnimTimer < _pickupAnimDuration)
+            {
+                _pickupAnimTimer += Time.deltaTime;
+                float norm = Mathf.Clamp01(_pickupAnimTimer / _pickupAnimDuration);
+
+                if (_player != null && norm < 0.45f)
+                {
+                    _player.transform.rotation = Quaternion.Slerp(_player.transform.rotation, targetRot, Time.deltaTime * 10f);
+                }
+
+                if (!attachedToHandOrBack && norm >= 0.45f && itemTransform != null)
+                {
+                    attachedToHandOrBack = true;
+                    CacheCharacterBones();
+
+                    if (stepId == "find_backpack")
+                    {
+                        _hasPickedUpBackpack = true;
+                        _equippedBackpackTransform = itemTransform;
+                        _equippedBackpackTransform.localScale *= 0.78f;
+                        ShowStatusToast("Рюкзак поднят и надет на спину!");
+                    }
+                    else if (stepId == "find_tablet")
+                    {
+                        _hasPickedUpTablet = true;
+                        _isHoldingTabletInHands = true;
+                        _holdTabletBlend = 1.0f;
+                        _equippedTabletTransform = itemTransform;
+                        _equippedTabletTransform.localScale *= 0.85f;
+                        ShowStatusToast("Планшет в руках! ([TAB] — экран, [T] — убрать в рюкзак)");
+                    }
+                }
+
+                yield return null;
+            }
+
+            _isPlayingPickupAnim = false;
+
+            if (_cameraController != null && wasFirstPerson)
+            {
+                _cameraController.UpdateCharacterMeshVisibility(true);
+            }
+
+            if (stepId == "find_tablet")
+            {
+                OpenTabletViewer();
+            }
+        }
+
+        /// <summary>
+        /// КИНЕМАТОГРАФИЧНАЯ КАТ-СЦЕНА С АНИМАЦИЕЙ ХОДЬБЫ К ВОДЕ И КОРАБЛЮ:
+        /// 1) Герой говорит: «Нужно идти к воде — возможно, там будет корабль.»
+        /// 2) Камера показывает героя со стороны, включается анимация ходьбы (Walk_N), и герой шагает по деревянному пирсу к воде.
+        /// 3) Герой останавливается на краю причала, а камера плавно поднимается из-за его плеча, открывая вид на качающийся на воде КОРАБЛЬ и стоящего у трапа ПЕРСОНАЖА!
+        /// </summary>
+        private IEnumerator PlayWalkToWaterAndShipCutsceneRoutine(InteractableStoryObject shoreInteractable)
+        {
+            if (_isPlayingEndingCutscene) yield break;
+            _isPlayingEndingCutscene = true;
+            _interactionPrompt = "";
+            _isTabletViewerOpen = false;
+            _isHoldingTabletInHands = false;
+
+            if (shoreInteractable != null)
+            {
+                shoreInteractable.enabled = false;
+            }
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+            if (_mainCam == null) _mainCam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+
+            if (_player != null)
+            {
+                _player.IsControlEnabled = false;
+            }
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsCutsceneControlled = true;
+                // Обязательно делаем 3D-модель главного героя видимой, чтобы в кат-сцене было видно, как он идёт к воде!
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+
+            // Conceal the relocation from the nearby marker to the authored cliff.
+            if (_endingApproachMarker != null)
+            {
+                float fadeTime = 0f;
+                while (fadeTime < 0.45f)
+                {
+                    fadeTime += Time.deltaTime;
+                    _endingFade = Mathf.Clamp01(fadeTime / 0.45f);
+                    yield return null;
+                }
+            }
+            CacheCharacterBones();
+
+            Vector3 walkStart = _shoreStartPoint != null
+                ? _shoreStartPoint.position
+                : (_player != null ? _player.transform.position : Vector3.zero);
+            Vector3 walkEnd = _pierWalkEndPoint != null
+                ? _pierWalkEndPoint.position
+                : (walkStart + (_player != null ? _player.transform.forward * 5.2f : Vector3.forward * 5.2f));
+
+            Vector3 walkDir = (walkEnd - walkStart);
+            walkDir.y = 0f;
+            if (walkDir.sqrMagnitude < 0.01f) walkDir = Vector3.forward;
+            walkDir.Normalize();
+            Vector3 walkRight = Vector3.Cross(Vector3.up, walkDir).normalized;
+            Quaternion walkRot = Quaternion.LookRotation(walkDir, Vector3.up);
+
+            CharacterController cc = _player != null ? _player.GetComponent<CharacterController>() : null;
+            if (cc != null) cc.enabled = false;
+            if (_player != null)
+            {
+                _player.transform.position = walkStart;
+                _player.transform.rotation = walkRot;
+            }
+
+            if (_endingApproachMarker != null && _mainCam != null)
+            {
+                Vector3 cameraPosition = walkStart - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
+                _mainCam.transform.position = cameraPosition;
+                _mainCam.transform.rotation = Quaternion.LookRotation(walkStart + walkDir * 3.5f + Vector3.up * 1.15f - cameraPosition);
+                float fadeTime = 0f;
+                while (fadeTime < 0.45f)
+                {
+                    fadeTime += Time.deltaTime;
+                    _endingFade = 1f - Mathf.Clamp01(fadeTime / 0.45f);
+                    yield return null;
+                }
+                _endingFade = 0f;
+            }
+
+            // Фраза 1: «Нужно идти к воде — возможно, там будет корабль.»
+            ShowMonologue("«Нужно идти к воде — возможно, там будет корабль.»", 4.5f);
+
+            // Фаза 1 (0..4.2 сек): Персонаж идёт шагом по пирсу к воде с полноценной 3D-анимацией ходьбы!
+            float walkDuration = 4.2f;
+            float t = 0f;
+            float stepSoundTimer = 0.2f;
+
+            while (t < walkDuration)
+            {
+                t += Time.deltaTime;
+                float norm = Mathf.Clamp01(t / walkDuration);
+
+                if (_player != null)
+                {
+                    Vector3 stepPosition = Vector3.Lerp(walkStart, walkEnd, norm);
+                    _player.transform.position = cliffArrivalPoint != null
+                        ? GroundCinematicPosition(stepPosition) : stepPosition;
+                    _player.transform.rotation = walkRot;
+                }
+
+                // Включаем 3D-анимацию ходьбы в Animator (Speed = 2.0f соответствует Walk_N в StarterAssets/BasicMotions)
+                if (_characterAnimator != null)
+                {
+                    _characterAnimator.SetFloat("Speed", 2.0f);
+                    _characterAnimator.SetFloat("MotionSpeed", 1.0f);
+                    _characterAnimator.SetBool("Grounded", true);
+                }
+
+                // Звуки шагов по причалу/берегу
+                stepSoundTimer -= Time.deltaTime;
+                if (stepSoundTimer <= 0f)
+                {
+                    stepSoundTimer = 0.48f;
+                    if (ProceduralForestAudio.Instance != null)
+                    {
+                        ProceduralForestAudio.Instance.PlayFootstep(false);
+                    }
+                }
+
+                // Кинематографичная камера плавно сопровождает идущего героя сбоку-сзади, открывая вид на воду и корабль
+                if (_mainCam != null && _player != null)
+                {
+                    Vector3 pPos = _player.transform.position;
+                    Vector3 camPos = pPos - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
+                    Vector3 lookAt = pPos + walkDir * 3.5f + Vector3.up * 1.15f;
+                    _mainCam.transform.position = camPos;
+                    _mainCam.transform.rotation = Quaternion.LookRotation(lookAt - camPos, Vector3.up);
+                }
+
+                yield return null;
+            }
+
+            // Персонаж останавливается у края причала перед кораблём (переход в стойку Idle)
+            if (_characterAnimator != null)
+            {
+                _characterAnimator.SetFloat("Speed", 0f);
+                _characterAnimator.SetFloat("MotionSpeed", 1f);
+            }
+
+            // Фраза 2: Герой видит корабль и стоящего на причале человека
+            ShowMonologue(
+                "«Эй-й-й! На борту! Я тут! Помоги!»",
+                6.0f
+            );
+
+            if (shoutForHelpVoice != null && _mainCam != null)
+                AudioSource.PlayClipAtPoint(shoutForHelpVoice, _mainCam.transform.position);
+
+            // Фаза 2 (4.2..9.0 сек): Панорамный наезд камеры из-за плеча героя на корабль и NPC у трапа
+            float revealDuration = 4.6f;
+            t = 0f;
+            Vector3 revealCamStart = walkEnd - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
+            Vector3 revealCamEnd = walkEnd - walkDir * 2.1f + walkRight * 1.05f + Vector3.up * 1.75f;
+            Vector3 shipLookTarget = _shipTransform != null
+                ? (_shipTransform.position + Vector3.up * 1.6f)
+                : (walkEnd + walkDir * 9.0f + Vector3.up * 1.5f);
+
+            while (t < revealDuration)
+            {
+                t += Time.deltaTime;
+                float norm = Mathf.Clamp01(t / revealDuration);
+                float smooth = Mathf.SmoothStep(0f, 1f, norm);
+
+                if (_mainCam != null)
+                {
+                    Vector3 camPos = Vector3.Lerp(revealCamStart, revealCamEnd, smooth);
+                    Vector3 lookPos = Vector3.Lerp(walkEnd + walkDir * 3.5f + Vector3.up * 1.15f, shipLookTarget, smooth);
+                    _mainCam.transform.position = camPos;
+                    _mainCam.transform.rotation = Quaternion.LookRotation(lookPos - camPos, Vector3.up);
+                }
+
+                yield return null;
+            }
+
+            yield return PlayCaptainConversation();
+
+            if (playSailingCutscene) yield return PlaySailingToRogovo();
+
+            if (cc != null) cc.enabled = true;
+            if (_cameraController != null)
+            {
+                _cameraController.BeginGameplayTransitionFromCutscene();
+            }
+            if (_player != null)
+            {
+                _player.IsControlEnabled = true;
+            }
+
+            _isPlayingEndingCutscene = false;
+            _isChapter2Reached = true;
+            SaveGame();
+        }
+
+        private Vector3 GroundCinematicPosition(Vector3 position)
+        {
+            float nearest = float.PositiveInfinity;
+            Vector3 result = position;
+            foreach (RaycastHit hit in Physics.RaycastAll(position + Vector3.up * 4f, Vector3.down,
+                12f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (hit.transform.IsChildOf(_player.transform) ||
+                    (_shipTransform != null && hit.transform.IsChildOf(_shipTransform))) continue;
+                if (hit.normal.y < 0.45f) continue;
+                float delta = Mathf.Abs(hit.point.y - position.y);
+                if (delta < nearest) { nearest = delta; result.y = hit.point.y + 0.02f; }
+            }
+            return result;
+        }
+
+        private bool TryFindShipStairRoute(Vector3 captainLocal, out Vector3 bottom, out Vector3 top)
+        {
+            bottom = top = Vector3.zero;
+            Transform bottomAnchor = null, topAnchor = null;
+            foreach (Transform part in _shipTransform.GetComponentsInChildren<Transform>(true))
+            {
+                if (part.name == "StairBottom") bottomAnchor = part;
+                if (part.name == "StairTop") topAnchor = part;
+            }
+            if (bottomAnchor != null && topAnchor != null)
+            {
+                bottom = _shipTransform.InverseTransformPoint(bottomAnchor.position);
+                top = _shipTransform.InverseTransformPoint(topAnchor.position);
+                return true;
+            }
+            float best = float.PositiveInfinity;
+            foreach (MeshFilter mesh in _shipTransform.GetComponentsInChildren<MeshFilter>())
+            {
+                string name = mesh.name.ToLowerInvariant();
+                if ((!name.Contains("stair") && !name.Contains("stairs") && !name.Contains("ladder")) ||
+                    name.Contains("rail") || mesh.sharedMesh == null) continue;
+                Bounds bounds = mesh.sharedMesh.bounds;
+                Bounds local = new Bounds(_shipTransform.InverseTransformPoint(mesh.transform.TransformPoint(bounds.center)), Vector3.zero);
+                for (int i = 0; i < 8; i++)
+                {
+                    Vector3 corner = bounds.center + Vector3.Scale(bounds.extents,
+                        new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+                    local.Encapsulate(_shipTransform.InverseTransformPoint(mesh.transform.TransformPoint(corner)));
+                }
+                // Choose either staircase, with the upper end nearest the captain.
+                bool alongZ = local.size.z >= local.size.x;
+                Vector3 endA = local.center, endB = local.center;
+                if (alongZ) { endA.z = local.min.z; endB.z = local.max.z; }
+                else { endA.x = local.min.x; endB.x = local.max.x; }
+                Vector3 flatCaptain = captainLocal; flatCaptain.y = local.center.y;
+                Vector3 upper = (endA - flatCaptain).sqrMagnitude < (endB - flatCaptain).sqrMagnitude ? endA : endB;
+                Vector3 lower = upper == endA ? endB : endA;
+                upper.y = local.max.y + 0.02f;
+                lower.y = local.min.y + 0.02f;
+                float distance = (upper - captainLocal).sqrMagnitude;
+                if (distance < best) { best = distance; bottom = lower; top = upper; }
+            }
+            return best < float.PositiveInfinity;
+        }
+
+        private IEnumerator WalkShipSegment(Vector3 from, Vector3 to)
+        {
+            float duration = Mathf.Max(0.3f, Vector3.Distance(from, to) / 1.25f);
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                elapsed += Time.deltaTime;
+                _player.transform.position = _shipTransform.TransformPoint(Vector3.Lerp(from, to, Mathf.Clamp01(elapsed / duration)));
+                Vector3 facing = Vector3.ProjectOnPlane(_shipTransform.TransformDirection(to - from), Vector3.up);
+                if (facing.sqrMagnitude > 0.001f) _player.transform.rotation = Quaternion.LookRotation(facing);
+                if (_characterAnimator != null)
+                {
+                    _characterAnimator.SetFloat("Speed", 2f);
+                    _characterAnimator.SetFloat("MotionSpeed", 1f);
+                    _characterAnimator.SetBool("Grounded", true);
+                }
+                if (_mainCam != null)
+                {
+                    Vector3 look = _player.transform.position + Vector3.up * 1.3f;
+                    Vector3 camera = look - _player.transform.forward * 3f + _shipTransform.right * 1.2f + Vector3.up * 0.6f;
+                    _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                }
+                yield return null;
+            }
+        }
+
+        private IEnumerator PlayCaptainConversation()
+        {
+            if (_player == null || _npcTransform == null || _shipTransform == null) yield break;
+            // A short montage cut brings the hero aboard; no walking across open water.
+            float fade = 0f;
+            while (fade < 0.6f)
+            {
+                fade += Time.deltaTime;
+                _endingFade = Mathf.Clamp01(fade / 0.6f);
+                yield return null;
+            }
+            Vector3 captainLocal = _shipTransform.InverseTransformPoint(_npcTransform.position);
+            Vector3 meetingLocal = captainLocal + Vector3.forward * 2f;
+            if (TryFindShipStairRoute(captainLocal, out Vector3 stairBottom, out Vector3 stairTop))
+            {
+                Vector3 approachLocal = stairBottom + (stairBottom - stairTop).normalized * 1.5f;
+                approachLocal.y = stairBottom.y;
+                _player.transform.position = _shipTransform.TransformPoint(approachLocal);
+                _endingFade = 0f;
+                yield return WalkShipSegment(approachLocal, stairBottom);
+                yield return WalkShipSegment(stairBottom, stairTop);
+                yield return WalkShipSegment(stairTop, meetingLocal);
+            }
+            else
+            {
+                // No invented diagonal route through the cabin if the mesh has no separate stairs.
+                _player.transform.position = _shipTransform.TransformPoint(meetingLocal);
+                _endingFade = 0f;
+                Debug.LogWarning("[Dimari] Не найдена отдельная лестница. Добавьте StairBottom и StairTop в префаб корабля для точного маршрута.");
+            }
+            if (_characterAnimator != null) _characterAnimator.SetFloat("Speed", 0f);
+            if (heroCaptainQuestion == null)
+                heroCaptainQuestion = Resources.Load<AudioClip>("Voice_Hero_CaptainQuestion");
+            if (pirateCaptainAnswer == null)
+                pirateCaptainAnswer = Resources.Load<AudioClip>("Voice_Pirate_CaptainAnswer");
+            const string question = "Товарищ, где я? Я не помню, как я тут оказался. Подскажите, где я?";
+            const string answer = "Слышь, сухопутная крыса, ты на необитаемом острове! И скажу я тебе по-честному: повезло тебе, что старый морской волк бросил тут свой якорь. Прыгай на борт — и мы с тобой доплывём до города, чтоб меня черти драли!";
+            yield return CaptainDialogueLine("Герой: " + question, heroCaptainQuestion, 7f, false, meetingLocal);
+            yield return CaptainDialogueLine("Капитан: " + answer, pirateCaptainAnswer, 19f, true, meetingLocal);
+        }
+
+        private IEnumerator PlaySailingToRogovo()
+        {
+            if (_shipTransform == null || _npcTransform == null || _player == null) yield break;
+            Vector3 heroLocal = _shipTransform.InverseTransformPoint(_player.transform.position);
+            _sailingStart = _shipBasePos;
+            Vector3 destination = sailingDestination != null ? sailingDestination.position
+                : _shipTransform.position + (_shoreStartPoint != null
+                    ? _shoreStartPoint.forward : _shipTransform.forward) * sailingDistance;
+            destination.y = _shipTransform.position.y;
+            _sailingEnd = _shipTransform.parent != null
+                ? _shipTransform.parent.InverseTransformPoint(destination) : destination;
+            _sailingElapsed = 0f;
+            _isSailing = true;
+            string[] lines =
+            {
+                "Капитан: Держись крепче, сухопутный! Курс на Рогово. Так кого ты там ищешь?",
+                "Герой: Димарика. Он работает в администрации в селе Рогово. Ездит на BMW третьей серии, 320d. Надеюсь, с ним всё в порядке.",
+                "Капитан: В администрации, говоришь? Значит, бумажные штормы ему знакомы! А как мне узнать твоего приятеля на берегу?",
+                "Герой: Включи Дору или Мэйби Бэйби — он наверняка узнает. А ещё он чертовски любит пиво и семечки. И мечтает купить Changan UNI-V, хотя у самого уже BMW.",
+                "Капитан: Ха! У каждого морского волка своя мечта. Мне бы парус без дыр, а ему новую сухопутную посудину! Только пиво до швартовки не открывать!",
+                "Герой: Договорились. Лишь бы найти его. Я до сих пор не понимаю, что случилось на острове. Доберёмся до Рогово — начну с администрации. Может, там знают, куда он пропал.",
+                "Капитан: Доберёмся, парень. Сперва порт, потом твоя администрация. А пока смотри на горизонт: море не любит, когда ему не доверяют."
+            };
+            for (int i = 0; i < lines.Length; i++)
+            {
+                AudioClip clip = Resources.Load<AudioClip>("Voice_Sailing_" + (i + 1));
+                yield return CaptainDialogueLine(lines[i], clip, Mathf.Max(5f, lines[i].Length / 13f),
+                    i % 2 == 0, heroLocal);
+            }
+            _isSailing = false;
+            // Keep the final world position; normal wave bobbing continues here.
+            _sailingStart = _shipBasePos;
+        }
+
+        private IEnumerator CaptainDialogueLine(string subtitle, AudioClip clip, float fallbackDuration,
+            bool captainSpeaking, Vector3 heroLocalPosition)
+        {
+            float duration = clip != null ? clip.length + 0.4f : fallbackDuration;
+            ShowMonologue(subtitle, duration);
+            AudioSource voice = null;
+            if (clip != null && _mainCam != null)
+            {
+                voice = _mainCam.gameObject.AddComponent<AudioSource>();
+                voice.spatialBlend = 0f;
+                voice.clip = clip;
+                voice.Play();
+            }
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                elapsed += Time.deltaTime;
+                _player.transform.position = _shipTransform.TransformPoint(heroLocalPosition);
+                FrameCaptainConversation(captainSpeaking);
+                yield return null;
+            }
+            if (voice != null) Destroy(voice);
+        }
+
+        private void FrameCaptainConversation(bool captainSpeaking)
+        {
+            if (_mainCam == null) return;
+            if (_isSailing)
+            {
+                float orbit = Mathf.Sin(_sailingElapsed * 0.07f);
+                Vector3 look = _shipTransform.position + Vector3.up * 5f;
+                Vector3 camera = _shipTransform.position + _shipTransform.right * (23f + orbit * 5f)
+                    - _shipTransform.forward * 18f + Vector3.up * 13f;
+                _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                return;
+            }
+            Vector3 heroHead = _player.transform.position + Vector3.up * 1.5f;
+            Vector3 captainHead = _npcTransform.position + Vector3.up * 1.5f;
+            Vector3 direction = (captainHead - heroHead).normalized;
+            Vector3 side = Vector3.Cross(Vector3.up, direction).normalized;
+            Vector3 look = captainSpeaking ? captainHead : heroHead;
+            Vector3 position = captainSpeaking
+                ? heroHead + side * 0.8f - direction * 0.4f
+                : captainHead + side * 0.8f + direction * 0.4f;
+            _mainCam.transform.SetPositionAndRotation(position, Quaternion.LookRotation(look - position));
+        }
+
+        public void OpenMainMenuOnStartup()
+        {
+            _isMenuOpen = true;
+            _isSettingsOpen = false;
+            _hasGameStarted = false;
+            _showHUD = false;
+            _isTabletViewerOpen = false;
+            Time.timeScale = 1.0f;
+
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+
+            if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
+            if (_director != null)
+            {
+                _director.StopAllCoroutines();
+                _director.enabled = false;
+            }
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player != null)
+            {
+                _player.IsControlEnabled = false;
+                if (_player.visualModelRoot != null)
+                {
+                    _player.visualModelRoot.localPosition = Vector3.zero;
+                    _player.visualModelRoot.localRotation = Quaternion.identity;
+                }
+            }
+
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = true;
+                _cameraController.IsCutsceneControlled = false;
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+        }
+
+        public void OpenPauseMenu()
+        {
+            _isMenuOpen = true;
+            _isSettingsOpen = false;
+            Time.timeScale = 1.0f;
+
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+
+            if (_player != null)
+            {
+                _player.IsControlEnabled = false;
+            }
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = true;
+                _cameraController.UpdateCharacterMeshVisibility(false);
+            }
+        }
+
+        public void ResumeFromPause()
+        {
+            _isMenuOpen = false;
+            _isSettingsOpen = false;
+            Time.timeScale = 1.0f;
+
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = false;
+                _cameraController.UpdateCharacterMeshVisibility(_cameraController.isFirstPerson);
+            }
+
+            if (_director != null && _director.IsPlayingCutscene)
+            {
+                _player.IsControlEnabled = false;
+            }
+            else if (_player != null && !_isPlayingEndingCutscene)
+            {
+                _player.IsControlEnabled = true;
+                _showHUD = true;
+            }
+        }
+
+        public void StartNewGame()
+        {
+            StopAllCoroutines();
+            _isSailing = false;
+            _endingFade = 0f;
+            _isPlayingEndingCutscene = false;
+            _isPlayingPickupAnim = false;
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player != null)
+            {
+                CharacterController controller = _player.GetComponent<CharacterController>();
+                if (controller != null) controller.enabled = true;
+            }
+            _isMenuOpen = false;
+            _isSettingsOpen = false;
+            _isTabletViewerOpen = false;
+            _hasGameStarted = true;
+            _isChapter2Reached = false;
+            Time.timeScale = 1.0f;
+
+            SetupDimariQuests();
+            RemoveStumpAndSpawnUpdatedStoryProps();
+
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = false;
+            }
+
+            if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
+            if (_director != null)
+            {
+                _director.enabled = true;
+                _director.StartAwakeningCutscene();
+            }
+            else
+            {
+                if (_player != null) _player.IsControlEnabled = true;
+                _showHUD = true;
+            }
+        }
+
+        public void SaveGame()
+        {
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player != null)
+            {
+                Vector3 pos = _player.transform.position;
+                PlayerPrefs.SetFloat("Dimari_Save_PosX", pos.x);
+                PlayerPrefs.SetFloat("Dimari_Save_PosY", pos.y);
+                PlayerPrefs.SetFloat("Dimari_Save_PosZ", pos.z);
+                PlayerPrefs.SetFloat("Dimari_Save_RotY", _player.transform.eulerAngles.y);
+            }
+
+            for (int i = 0; i < questSteps.Count; i++)
+            {
+                PlayerPrefs.SetInt("Dimari_Save_Quest_" + questSteps[i].id, questSteps[i].isCompleted ? 1 : 0);
+            }
+
+            PlayerPrefs.SetInt("Dimari_HasSave", 1);
+            PlayerPrefs.Save();
+
+            ShowStatusToast("Игра успешно сохранена!");
+        }
+
+        public void LoadSavedGame()
+        {
+            if (PlayerPrefs.GetInt("Dimari_HasSave", 0) == 0)
+            {
+                ShowStatusToast("Нет сохранённой игры — начинаем новую!");
+                StartNewGame();
+                return;
+            }
+
+            _isMenuOpen = false;
+            _isSettingsOpen = false;
+            _hasGameStarted = true;
+            Time.timeScale = 1.0f;
+
+            if (_director != null)
+            {
+                _director.StopAllCoroutines();
+                _director.FinishAwakeningImmediately();
+                _director.enabled = false;
+            }
+
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_player != null && PlayerPrefs.HasKey("Dimari_Save_PosX"))
+            {
+                CharacterController cc = _player.GetComponent<CharacterController>();
+                if (cc != null) cc.enabled = false;
+
+                Vector3 savedPos = new Vector3(
+                    PlayerPrefs.GetFloat("Dimari_Save_PosX"),
+                    PlayerPrefs.GetFloat("Dimari_Save_PosY"),
+                    PlayerPrefs.GetFloat("Dimari_Save_PosZ")
+                );
+                _player.transform.position = savedPos;
+                _player.transform.rotation = Quaternion.Euler(0f, PlayerPrefs.GetFloat("Dimari_Save_RotY", 0f), 0f);
+
+                if (cc != null) cc.enabled = true;
+                _player.IsControlEnabled = true;
+            }
+
+            for (int i = 0; i < questSteps.Count; i++)
+            {
+                questSteps[i].isCompleted = PlayerPrefs.GetInt("Dimari_Save_Quest_" + questSteps[i].id, 0) == 1;
+            }
+
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = false;
+                _cameraController.IsCutsceneControlled = false;
+            }
+
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            _showHUD = true;
+
+            ShowStatusToast("Сохранение загружено!");
+        }
+
+        public void ShowStatusToast(string msg)
+        {
+            _statusToast = msg;
+            _statusToastTimer = 3.0f;
+        }
+
+        public void SetHUDVisible(bool visible)
+        {
+            _showHUD = visible;
+        }
+
+        public void ShowMonologue(string text, float duration = 5.5f)
+        {
+            _currentSubtitle = text;
+            _subtitleTimer = duration;
+            _subtitleAlpha = 1.0f;
+        }
+
+        public void SetInteractionPrompt(string prompt)
+        {
+            _interactionPrompt = prompt;
+        }
+
+        public void CompleteQuestStep(string stepId, string monologueText)
+        {
+            foreach (QuestStep step in questSteps)
+            {
+                if (step.id == stepId && !step.isCompleted)
+                {
+                    step.isCompleted = true;
+                    break;
+                }
+            }
+
+            InteractableStoryObject targetObj = null;
+            InteractableStoryObject[] allInteractables = FindObjectsByType<InteractableStoryObject>();
+            foreach (InteractableStoryObject iso in allInteractables)
+            {
+                if (iso != null && iso.questStepId == stepId)
+                {
+                    targetObj = iso;
+                    break;
+                }
+            }
+
+            if (stepId == "find_backpack" || stepId == "find_tablet")
+            {
+                StartCoroutine(PlayPickupItemRoutine(stepId, targetObj));
+            }
+
+            if (!string.IsNullOrEmpty(monologueText))
+            {
+                ShowMonologue(monologueText, 7.5f);
+            }
+
+            if (ProceduralForestAudio.Instance != null)
+            {
+                string voiceKey = stepId;
+                if (stepId == "find_backpack") voiceKey = "backpack";
+                else if (stepId == "find_tablet") voiceKey = "tablet";
+                ProceduralForestAudio.Instance.PlayQuestVoiceClip(voiceKey);
+            }
+
+            if (stepId == "rogovo_exit")
+            {
+                // Запускаем кинематографичную кат-сцену с анимацией ходьбы к воде и кораблю!
+                StartCoroutine(PlayWalkToWaterAndShipCutsceneRoutine(targetObj));
+            }
+        }
+
+        private static void ConfigureStyle(ref GUIStyle style, int fontSize, FontStyle fontStyle, TextAnchor alignment, Color textColor, bool wordWrap = false)
+        {
+            if (style == null)
+            {
+                style = new GUIStyle(GUI.skin != null ? GUI.skin.label : new GUIStyle());
+            }
+            style.fontSize = fontSize;
+            style.fontStyle = fontStyle;
+            style.alignment = alignment;
+            style.wordWrap = wordWrap;
+            style.richText = true;
+            style.normal.textColor = textColor;
+            style.hover.textColor = textColor;
+            style.active.textColor = textColor;
+            style.focused.textColor = textColor;
+        }
+
+        private void EnsureStyles()
+        {
+            if (_darkPanelTex == null)
+            {
+                _darkPanelTex = new Texture2D(1, 1);
+                _darkPanelTex.SetPixel(0, 0, new Color(0.05f, 0.07f, 0.08f, 0.84f));
+                _darkPanelTex.Apply();
+            }
+
+            if (_subtitlePanelTex == null)
+            {
+                _subtitlePanelTex = new Texture2D(1, 1);
+                _subtitlePanelTex.SetPixel(0, 0, new Color(0.03f, 0.04f, 0.05f, 0.90f));
+                _subtitlePanelTex.Apply();
+            }
+
+            if (_tabletBezelTex == null)
+            {
+                _tabletBezelTex = new Texture2D(1, 1);
+                _tabletBezelTex.SetPixel(0, 0, new Color(0.08f, 0.09f, 0.11f, 0.98f));
+                _tabletBezelTex.Apply();
+            }
+
+            if (_menuLeftGradientTex == null)
+            {
+                int w = 128;
+                _menuLeftGradientTex = new Texture2D(w, 1);
+                _menuLeftGradientTex.wrapMode = TextureWrapMode.Clamp;
+                for (int x = 0; x < w; x++)
+                {
+                    float norm = (float)x / (w - 1);
+                    float alpha = Mathf.Pow(1f - norm, 2.0f) * 0.68f;
+                    _menuLeftGradientTex.SetPixel(x, 0, new Color(0.04f, 0.05f, 0.06f, alpha));
+                }
+                _menuLeftGradientTex.Apply();
+            }
+
+            if (_buttonHoverBarTex == null)
+            {
+                int w = 64;
+                _buttonHoverBarTex = new Texture2D(w, 1);
+                _buttonHoverBarTex.wrapMode = TextureWrapMode.Clamp;
+                for (int x = 0; x < w; x++)
+                {
+                    float norm = (float)x / (w - 1);
+                    float alpha = Mathf.Lerp(0.45f, 0.0f, norm);
+                    _buttonHoverBarTex.SetPixel(x, 0, new Color(0.92f, 0.95f, 0.92f, alpha));
+                }
+                _buttonHoverBarTex.Apply();
+            }
+
+            if (_accentBarTex == null)
+            {
+                _accentBarTex = new Texture2D(1, 1);
+                _accentBarTex.SetPixel(0, 0, new Color(0.96f, 0.97f, 0.95f, 1.0f));
+                _accentBarTex.Apply();
+            }
+
+            if (_goldAccentTex == null)
+            {
+                _goldAccentTex = new Texture2D(1, 1);
+                _goldAccentTex.SetPixel(0, 0, new Color(1.0f, 0.84f, 0.38f, 1.0f));
+                _goldAccentTex.Apply();
+            }
+
+            if (_logoBoxTex == null)
+            {
+                _logoBoxTex = new Texture2D(1, 1);
+                _logoBoxTex.SetPixel(0, 0, new Color(0.94f, 0.94f, 0.92f, 0.97f));
+                _logoBoxTex.Apply();
+            }
+
+            if (_keyCapTex == null)
+            {
+                _keyCapTex = new Texture2D(1, 1);
+                _keyCapTex.SetPixel(0, 0, new Color(0.92f, 0.92f, 0.92f, 0.96f));
+                _keyCapTex.Apply();
+            }
+
+            if (!_stylesInitialized || _logoMainStyle == null || _logoMainStyle.fontSize != 26)
+            {
+                _stylesInitialized = true;
+
+                ConfigureStyle(ref _logoMainStyle, 26, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.06f, 0.07f, 0.07f, 1f), false);
+                ConfigureStyle(ref _menuBtnStyle, 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.92f, 0.94f, 0.92f, 0.98f), false);
+                ConfigureStyle(ref _menuBtnHoverStyle, 20, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white, false);
+                ConfigureStyle(ref _questHeaderStyle, 17, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1.0f, 0.86f, 0.42f, 1f), false);
+                ConfigureStyle(ref _questActiveStyle, 15, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white, true);
+                ConfigureStyle(ref _questDoneStyle, 15, FontStyle.Italic, TextAnchor.MiddleLeft, new Color(0.55f, 0.95f, 0.62f, 0.95f), true);
+                ConfigureStyle(ref _subtitleSpeakerStyle, 14, FontStyle.Bold, TextAnchor.UpperCenter, new Color(1.0f, 0.84f, 0.38f, 1f), false);
+                ConfigureStyle(ref _subtitleStyle, 19, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.99f, 0.98f, 0.94f, 1f), true);
+                ConfigureStyle(ref _promptStyle, 17, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1.0f, 0.92f, 0.55f, 1f), false);
+                ConfigureStyle(ref _bottomBarTextStyle, 14, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.94f, 0.96f, 0.94f, 0.98f), false);
+                ConfigureStyle(ref _keyCapStyle, 12, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.06f, 0.06f, 0.06f, 1f), false);
+                ConfigureStyle(ref _settingsLabelStyle, 15, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.96f, 0.97f, 0.96f, 1f), false);
+                ConfigureStyle(ref _chapter2TitleStyle, 28, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1.0f, 0.88f, 0.45f, 1f), false);
+            }
+        }
+
+        private void DrawEndingApproachMarker()
+        {
+            if (_endingApproachMarker == null || _player == null || _mainCam == null ||
+                !_hasGameStarted || _isMenuOpen || !_hasPickedUpTablet || _isTabletViewerOpen ||
+                _isPlayingEndingCutscene || _isChapter2Reached) return;
+            Vector3 screen = _mainCam.WorldToScreenPoint(_endingApproachMarker.position + Vector3.up * 1.2f);
+            float distance = Vector3.Distance(_player.transform.position, _endingApproachMarker.position);
+            GUIStyle markerStyle = new GUIStyle(GUI.skin.box)
+            {
+                fontSize = 20, alignment = TextAnchor.MiddleCenter, richText = true
+            };
+            float x = screen.z > 0f ? Mathf.Clamp(screen.x, 150f, Screen.width - 150f) : Screen.width * 0.5f;
+            float y = screen.z > 0f ? Mathf.Clamp(Screen.height - screen.y, 100f, Screen.height - 100f) : Screen.height - 140f;
+            string hint = screen.z > 0f ? "◆ К ОБРЫВУ" : "Повернитесь к метке";
+            GUI.Box(new Rect(x - 140f, y - 35f, 280f, 70f),
+                $"<color=#FFE18A>{hint}</color>\n<color=#FFFFFF>{distance:0} м — подойдите</color>", markerStyle);
+        }
+
+        private void OnGUI()
+        {
+            GUI.depth = -100;
+            GUI.color = Color.white;
+            GUI.contentColor = Color.white;
+            GUI.backgroundColor = Color.white;
+
+            EnsureStyles();
+            if (_endingFade > 0f)
+            {
+                GUI.color = new Color(0f, 0f, 0f, _endingFade);
+                GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), Texture2D.whiteTexture);
+                GUI.color = Color.white;
+                return;
+            }
+            DrawEndingApproachMarker();
+
+            if (_isMenuOpen)
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+                DrawDyingLightStyleMenu();
+                DrawToastIfActive();
+                return;
+            }
+
+            if (_isChapter2Reached)
+            {
+                DrawChapter2TransitionOverlay();
+            }
+
+            if (_isTabletViewerOpen)
+            {
+                DrawTabletPhotoViewerOverlay();
+            }
+
+            DrawSubtitlesBar();
+            DrawToastIfActive();
+
+            if (!_showHUD) return;
+
+            float panelX = 24f;
+            float panelY = 24f;
+            float panelW = 460f;
+            float panelH = 54f + questSteps.Count * 38f;
+
+            GUI.DrawTexture(new Rect(panelX, panelY, panelW, panelH), _darkPanelTex);
+            GUI.DrawTexture(new Rect(panelX, panelY, 4f, panelH), _goldAccentTex);
+            GUI.Label(
+                new Rect(panelX + 16f, panelY + 10f, panelW - 28f, 28f),
+                $"<color=#FFDB6B><b>{questHeader}</b></color>",
+                _questHeaderStyle
+            );
+
+            float curY = panelY + 42f;
+            foreach (QuestStep step in questSteps)
+            {
+                if (step.isCompleted)
+                {
+                    GUI.Label(
+                        new Rect(panelX + 16f, curY, panelW - 28f, 36f),
+                        $"<color=#8CEB9E>✓ {step.title}</color>",
+                        _questDoneStyle
+                    );
+                }
+                else
+                {
+                    GUI.Label(
+                        new Rect(panelX + 16f, curY, panelW - 28f, 36f),
+                        $"<color=#FFFFFF><b>{step.title}</b></color>",
+                        _questActiveStyle
+                    );
+                }
+                curY += 36f;
+            }
+
+            if (!_isTabletViewerOpen && !_isPlayingEndingCutscene)
+            {
+                float centerX = Screen.width * 0.5f;
+                float centerY = Screen.height * 0.5f;
+                GUI.DrawTexture(new Rect(centerX - 2f, centerY - 2f, 4f, 4f), _accentBarTex);
+
+                if (!string.IsNullOrEmpty(_interactionPrompt))
+                {
+                    float pW = 500f;
+                    float pH = 44f;
+                    Rect pRect = new Rect(centerX - pW * 0.5f, centerY + 32f, pW, pH);
+                    GUI.DrawTexture(pRect, _subtitlePanelTex);
+                    GUI.DrawTexture(new Rect(pRect.x, pRect.y, pRect.width, 2f), _goldAccentTex);
+                    GUI.Label(
+                        pRect,
+                        $"<color=#FFE875><b>{_interactionPrompt}</b></color>",
+                        _promptStyle
+                    );
+                }
+                else if (_isHoldingTabletInHands)
+                {
+                    float pW = 480f;
+                    float pH = 38f;
+                    Rect pRect = new Rect(centerX - pW * 0.5f, Screen.height - 86f, pW, pH);
+                    GUI.DrawTexture(pRect, _subtitlePanelTex);
+                    GUI.DrawTexture(new Rect(pRect.x, pRect.y, pRect.width, 2f), _goldAccentTex);
+                    GUI.Label(
+                        pRect,
+                        "<color=#FFE875><b>[T] или [ПКМ] Убрать в рюкзак   •   [TAB] На весь экран</b></color>",
+                        _promptStyle
+                    );
+                }
+            }
+
+            string tabHint = _hasPickedUpTablet ? "   [TAB] Фото   [T / ПКМ] Убрать в рюкзак / В руки" : "";
+            float bottomBarW = _hasPickedUpTablet ? 860f : 530f;
+            GUI.DrawTexture(new Rect(24f, Screen.height - 42f, bottomBarW, 30f), _darkPanelTex);
+            GUI.Label(
+                new Rect(36f, Screen.height - 40f, bottomBarW - 20f, 26f),
+                $"<color=#F0F4F0>[ESC] Меню / Пауза   [F5] Сохранить   [E] Поднять   [V] 1/3 лицо{tabHint}</color>",
+                _bottomBarTextStyle
+            );
+        }
+
+        private void DrawTabletPhotoViewerOverlay()
+        {
+            float w = Screen.width;
+            float h = Screen.height;
+
+            float tabW = Mathf.Min(820f, w - 100f);
+            float tabH = Mathf.Min(560f, h - 150f);
+            float tabX = (w - tabW) * 0.5f;
+            float tabY = (h - tabH) * 0.45f;
+
+            GUI.DrawTexture(new Rect(tabX - 6f, tabY - 6f, tabW + 12f, tabH + 12f), _goldAccentTex);
+            GUI.DrawTexture(new Rect(tabX, tabY, tabW, tabH), _tabletBezelTex);
+
+            GUI.Label(
+                new Rect(tabX + 24f, tabY + 12f, tabW - 48f, 26f),
+                "<color=#FFDB6B><b>ПЛАНШЕТ ДИМАРИКА  •  ГАЛЕРЕЯ: ПОСЛЕДНЕЕ ФОТО  •  ОРИЕНТИР: ИДТИ К ВОДЕ (КОРАБЛЬ →)</b></color>",
+                _questHeaderStyle
+            );
+
+            Rect screenRect = new Rect(tabX + 24f, tabY + 44f, tabW - 48f, tabH - 104f);
+            GUI.DrawTexture(screenRect, _darkPanelTex);
+
+            Texture2D photo = LoadTabletPhotoTexture();
+            if (photo != null)
+            {
+                GUI.DrawTexture(screenRect, photo, ScaleMode.ScaleToFit, false);
+            }
+            else
+            {
+                GUI.Label(
+                    screenRect,
+                    "<color=#FFFFFF><b>Фотография загружается...</b></color>",
+                    _subtitleStyle
+                );
+            }
+
+            float btnW = 360f;
+            float btnH = 38f;
+            float gap = 20f;
+            float startBtnsX = tabX + (tabW - (btnW * 2f + gap)) * 0.5f;
+            float btnsY = tabY + tabH - 50f;
+
+            Rect putAwayBtnRect = new Rect(startBtnsX, btnsY, btnW, btnH);
+            GUI.DrawTexture(putAwayBtnRect, _buttonHoverBarTex);
+            GUI.DrawTexture(new Rect(putAwayBtnRect.x, putAwayBtnRect.y, 4f, putAwayBtnRect.height), _goldAccentTex);
+            GUI.Label(
+                putAwayBtnRect,
+                "<color=#FFE875><b>[E] / [TAB] УБРАТЬ В РЮКЗАК</b></color>",
+                _promptStyle
+            );
+
+            Rect holdInHandsBtnRect = new Rect(startBtnsX + btnW + gap, btnsY, btnW, btnH);
+            GUI.DrawTexture(holdInHandsBtnRect, _buttonHoverBarTex);
+            GUI.DrawTexture(new Rect(holdInHandsBtnRect.x, holdInHandsBtnRect.y, 4f, holdInHandsBtnRect.height), _accentBarTex);
+            GUI.Label(
+                holdInHandsBtnRect,
+                "<color=#FFFFFF><b>[T] ДЕРЖАТЬ В РУКАХ</b></color>",
+                _promptStyle
+            );
+
+            if (Event.current.type == EventType.MouseDown)
+            {
+                if (putAwayBtnRect.Contains(Event.current.mousePosition))
+                {
+                    Event.current.Use();
+                    PutTabletInBackpack();
+                }
+                else if (holdInHandsBtnRect.Contains(Event.current.mousePosition))
+                {
+                    Event.current.Use();
+                    KeepTabletInHands();
+                }
+            }
+        }
+
+        private void DrawSubtitlesBar()
+        {
+            if (_subtitleAlpha <= 0.01f || string.IsNullOrEmpty(_currentSubtitle))
+            {
+                return;
+            }
+
+            float boxW = Mathf.Min(880f, Screen.width - 80f);
+            float boxH = 92f;
+            float boxX = (Screen.width - boxW) * 0.5f;
+            float boxY = Screen.height - 142f;
+
+            Color prevColor = GUI.color;
+            GUI.color = new Color(1f, 1f, 1f, _subtitleAlpha);
+
+            GUI.DrawTexture(new Rect(boxX, boxY, boxW, boxH), _subtitlePanelTex);
+            GUI.DrawTexture(new Rect(boxX, boxY, boxW, 3f), _goldAccentTex);
+
+            GUI.Label(
+                new Rect(boxX + 20f, boxY + 8f, boxW - 40f, 22f),
+                "<color=#FFD86B><b>ГЛАВНЫЙ ГЕРОЙ</b></color>",
+                _subtitleSpeakerStyle
+            );
+
+            GUI.Label(
+                new Rect(boxX + 24f, boxY + 28f, boxW - 48f, boxH - 34f),
+                $"<color=#FFFDF5><b>{_currentSubtitle}</b></color>",
+                _subtitleStyle
+            );
+
+            GUI.color = prevColor;
+        }
+
+        private void DrawDyingLightStyleMenu()
+        {
+            float w = Screen.width;
+            float h = Screen.height;
+
+            GUI.DrawTexture(new Rect(0f, 0f, w * 0.38f, h), _menuLeftGradientTex);
+
+            float logoX = 64f;
+            float logoY = 72f;
+            float logoW = 395f;
+            float logoH = 58f;
+
+            GUI.DrawTexture(new Rect(logoX, logoY, logoW, logoH), _logoBoxTex);
+            GUI.Label(
+                new Rect(logoX + 8f, logoY + 4f, logoW - 16f, logoH - 8f),
+                "<color=#101212><size=25><b>ПОИСКИ ДИМАРИКА</b></size></color>",
+                _logoMainStyle
+            );
+
+            if (!_isSettingsOpen)
+            {
+                float btnX = 64f;
+                float btnY = 205f;
+                float btnW = 390f;
+                float btnH = 46f;
+                float spacing = 56f;
+
+                int row = 0;
+
+                if (_hasGameStarted)
+                {
+                    if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "ВЕРНУТЬСЯ В ИГРУ", row))
+                    {
+                        ResumeFromPause();
+                    }
+                    row++;
+                }
+
+                if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "НАЧАТЬ НОВУЮ ИГРУ", row))
+                {
+                    _newGameRequested = true;
+                    return;
+                }
+                row++;
+
+                if (_hasGameStarted)
+                {
+                    if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "СОХРАНИТЬ ИГРУ", row))
+                    {
+                        SaveGame();
+                    }
+                    row++;
+                }
+                else if (PlayerPrefs.GetInt("Dimari_HasSave", 0) == 1)
+                {
+                    if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "ЗАГРУЗИТЬ СОХРАНЕНИЕ", row))
+                    {
+                        LoadSavedGame();
+                    }
+                    row++;
+                }
+                else
+                {
+                    if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "СОХРАНЕНИЕ", row))
+                    {
+                        SaveGame();
+                    }
+                    row++;
+                }
+
+                if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "НАСТРОЙКИ", row))
+                {
+                    _isSettingsOpen = true;
+                }
+                row++;
+
+                if (DrawMenuButton(new Rect(btnX, btnY + spacing * row, btnW, btnH), "ВЫХОД", row))
+                {
+#if UNITY_EDITOR
+                    UnityEditor.EditorApplication.isPlaying = false;
+#else
+                    Application.Quit();
+#endif
+                }
+            }
+            else
+            {
+                DrawSettingsPanel(64f, 185f);
+            }
+
+            float bottomY = h - 52f;
+            DrawKeyHint(64f, bottomY, "ESC", _isSettingsOpen ? "Назад" : (_hasGameStarted ? "В игру" : "Выход"));
+            DrawKeyHint(195f, bottomY, "F5", "Быстрое сохранение");
+            DrawKeyHint(405f, bottomY, "O", "Настройки");
+
+            GUI.Label(
+                new Rect(w - 140f, bottomY, 125f, 26f),
+                "<color=#E8ECE8><b>ВЕР. 1.6.0</b></color>",
+                _bottomBarTextStyle
+            );
+        }
+
+        private bool DrawMenuButton(Rect rect, string label, int index)
+        {
+            Vector2 mousePos = Event.current.mousePosition;
+            bool isHovered = rect.Contains(mousePos);
+            if (isHovered)
+            {
+                _selectedMenuIndex = index;
+            }
+
+            bool isHighlighted = isHovered || (_selectedMenuIndex == index);
+
+            if (isHighlighted)
+            {
+                GUI.DrawTexture(rect, _buttonHoverBarTex);
+                GUI.DrawTexture(new Rect(rect.x, rect.y + 4f, 4f, rect.height - 8f), _goldAccentTex);
+            }
+
+            GUIStyle style = isHighlighted ? _menuBtnHoverStyle : _menuBtnStyle;
+            string coloredLabel = isHighlighted
+                ? $"<color=#FFFFFF><size=19><b>{label}</b></size></color>"
+                : $"<color=#E6EAE6><size=17><b>{label}</b></size></color>";
+
+            GUI.Label(new Rect(rect.x + 18f, rect.y, rect.width - 18f, rect.height), coloredLabel, style);
+
+            if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && rect.Contains(Event.current.mousePosition))
+            {
+                Event.current.Use();
+                if (ProceduralForestAudio.Instance != null)
+                {
+                    ProceduralForestAudio.Instance.PlayInteractSound();
+                }
+                return true;
+            }
+
+            return GUI.Button(rect, GUIContent.none, GUIStyle.none);
+        }
+
+        private void DrawSettingsPanel(float startX, float startY)
+        {
+            float panelW = 440f;
+            float panelH = 355f;
+            GUI.DrawTexture(new Rect(startX - 12f, startY - 12f, panelW, panelH), _subtitlePanelTex);
+            GUI.DrawTexture(new Rect(startX - 12f, startY - 12f, 4f, panelH), _goldAccentTex);
+
+            GUI.Label(
+                new Rect(startX + 8f, startY, 400f, 28f),
+                "<color=#FFDB6B><size=16><b>НАСТРОЙКИ ГРОМКОСТИ И КАМЕРЫ</b></size></color>",
+                _questHeaderStyle
+            );
+
+            float master = ProceduralForestAudio.Instance != null ? ProceduralForestAudio.Instance.masterVolume : 1.0f;
+            float voice = ProceduralForestAudio.Instance != null ? ProceduralForestAudio.Instance.voiceVolume : 1.0f;
+            float env = PlayerPrefs.GetFloat("Dimari_EnvVol", 0.7f);
+            float sens = _cameraController != null ? _cameraController.mouseSensitivity : 2.2f;
+
+            float y = startY + 44f;
+
+            GUI.Label(
+                new Rect(startX + 8f, y, 235f, 24f),
+                $"<color=#FFFFFF><b>Общая громкость: {Mathf.RoundToInt(master * 100f)}%</b></color>",
+                _settingsLabelStyle
+            );
+            float newMaster = GUI.HorizontalSlider(new Rect(startX + 245f, y + 6f, 160f, 20f), master, 0f, 1f);
+            y += 44f;
+
+            GUI.Label(
+                new Rect(startX + 8f, y, 235f, 24f),
+                $"<color=#FFFFFF><b>Громкость озвучки: {Mathf.RoundToInt(voice * 100f)}%</b></color>",
+                _settingsLabelStyle
+            );
+            float newVoice = GUI.HorizontalSlider(new Rect(startX + 245f, y + 6f, 160f, 20f), voice, 0f, 1f);
+            y += 44f;
+
+            GUI.Label(
+                new Rect(startX + 8f, y, 235f, 24f),
+                $"<color=#FFFFFF><b>Звуки леса и шагов: {Mathf.RoundToInt(env * 100f)}%</b></color>",
+                _settingsLabelStyle
+            );
+            float newEnv = GUI.HorizontalSlider(new Rect(startX + 245f, y + 6f, 160f, 20f), env, 0f, 1f);
+            y += 44f;
+
+            if (ProceduralForestAudio.Instance != null &&
+                (Mathf.Abs(newMaster - master) > 0.005f || Mathf.Abs(newVoice - voice) > 0.005f || Mathf.Abs(newEnv - env) > 0.005f))
+            {
+                ProceduralForestAudio.Instance.ApplyVolumeSettings(newMaster, newVoice, newEnv);
+            }
+
+            GUI.Label(
+                new Rect(startX + 8f, y, 235f, 24f),
+                $"<color=#FFFFFF><b>Чувствительность мыши: {sens:F1}</b></color>",
+                _settingsLabelStyle
+            );
+            float newSens = GUI.HorizontalSlider(new Rect(startX + 245f, y + 6f, 160f, 20f), sens, 0.4f, 5.0f);
+            if (_cameraController != null && Mathf.Abs(newSens - sens) > 0.01f)
+            {
+                _cameraController.mouseSensitivity = newSens;
+                PlayerPrefs.SetFloat("Dimari_MouseSens", newSens);
+            }
+            y += 48f;
+
+            bool isFp = _cameraController != null && _cameraController.isFirstPerson;
+            string camModeLabel = isFp ? "Режим камеры: От 1-го лица (Сменить)" : "Режим камеры: От 3-го лица (Сменить)";
+            if (DrawMenuButton(new Rect(startX + 8f, y, 400f, 38f), camModeLabel, 10))
+            {
+                if (_cameraController != null)
+                {
+                    _cameraController.isFirstPerson = !_cameraController.isFirstPerson;
+                    PlayerPrefs.SetInt("Dimari_FirstPerson", _cameraController.isFirstPerson ? 1 : 0);
+                }
+            }
+            y += 50f;
+
+            if (DrawMenuButton(new Rect(startX + 8f, y, 400f, 42f), "← НАЗАД В МЕНЮ", 11))
+            {
+                PlayerPrefs.Save();
+                _isSettingsOpen = false;
+            }
+        }
+
+        private void DrawKeyHint(float x, float y, string keyText, string actionText)
+        {
+            float keyW = Mathf.Max(30f, keyText.Length * 11f + 14f);
+            GUI.DrawTexture(new Rect(x, y, keyW, 24f), _keyCapTex);
+            GUI.Label(new Rect(x, y, keyW, 24f), $"<color=#111111><b>{keyText}</b></color>", _keyCapStyle);
+            GUI.Label(new Rect(x + keyW + 8f, y, 165f, 24f), $"<color=#F2F5F2><b>{actionText}</b></color>", _bottomBarTextStyle);
+        }
+
+        private void DrawToastIfActive()
+        {
+            if (_statusToastTimer <= 0f || string.IsNullOrEmpty(_statusToast)) return;
+
+            float w = 440f;
+            float h = 42f;
+            Rect r = new Rect(Screen.width - w - 32f, 32f, w, h);
+            GUI.DrawTexture(r, _subtitlePanelTex);
+            GUI.DrawTexture(new Rect(r.x, r.y, 4f, r.height), _goldAccentTex);
+            GUI.Label(
+                new Rect(r.x + 14f, r.y + 8f, r.width - 20f, 26f),
+                $"<color=#FFFFFF><b>{_statusToast}</b></color>",
+                _questActiveStyle
+            );
+        }
+
+        private void DrawChapter2TransitionOverlay()
+        {
+            float boxW = 680f;
+            float boxH = 165f;
+            float boxX = (Screen.width - boxW) * 0.5f;
+            float boxY = Screen.height * 0.22f;
+
+            GUI.DrawTexture(new Rect(boxX, boxY, boxW, boxH), _subtitlePanelTex);
+            GUI.DrawTexture(new Rect(boxX, boxY, boxW, 4f), _goldAccentTex);
+            GUI.Label(
+                new Rect(boxX, boxY + 24f, boxW, 44f),
+                "<color=#FFE066><size=26><b>ГЛАВА 1 ЗАВЕРШЕНА</b></size></color>",
+                _chapter2TitleStyle
+            );
+            GUI.Label(
+                new Rect(boxX + 24f, boxY + 74f, boxW - 48f, 68f),
+                "<color=#FFFFFF><b>У берега найден корабль! Отправление во 2-ю главу: «Городок Димарика, Рогово»</b></color>",
+                _subtitleStyle
+            );
+        }
+    }
+}
