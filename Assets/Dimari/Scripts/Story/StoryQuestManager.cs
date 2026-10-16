@@ -2501,21 +2501,100 @@ namespace Dimari.Story
             _showHUD = true;
             questSteps.Clear();
             questSteps.Add(new QuestStep { id = "city_administration", title = "Найти администрацию Рогово и узнать о Димарике." });
-            ShowMonologue("Капитан: Вот мы и на месте, сухопутный. Теперь ищи своего Димарика!", 5f);
-            float elapsed = 0f;
-            while (elapsed < 5f)
-            {
-                elapsed += Time.deltaTime;
-                Vector3 look = arrival.position + Vector3.up * 1.3f + arrival.forward * 3f;
-                Vector3 camera = arrival.position - arrival.forward * 5f + Vector3.up * 3f + arrival.right * 2f;
-                _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
-                yield return null;
-            }
+            yield return CityCaptainFarewell(arrival);
             _player.ResetWaterMotion();
             if (cc != null) cc.enabled = true;
             _player.IsControlEnabled = true;
             _cameraController.BeginGameplayTransitionFromCutscene();
             _isPlayingEndingCutscene = false;
+        }
+
+        private IEnumerator CityCaptainFarewell(Transform arrival)
+        {
+            if (_npcTransform == null) yield break;
+            // The ship and its wheel have been unloaded. Never retain the helm pose ashore.
+            _captainWheel = null;
+            Vector3 toHero = Vector3.ProjectOnPlane(_player.transform.position - _npcTransform.position, Vector3.up);
+            if (toHero.sqrMagnitude > 0.01f)
+                _npcTransform.rotation = Quaternion.LookRotation(toHero);
+            AudioClip clip = Resources.Load<AudioClip>("Voice_Pirate_CityArrival");
+            float duration = clip != null ? clip.length + 0.5f : 15f;
+            ShowMonologue("Капитан: Еле доплыли до энтого берега, чтоб его в кильватер! Я пошёл хлебнуть ромцу где-нибудь, а ты дуй ищи администрацию — авось там подскажут, где он, сухопутный краб, схоронился.", duration);
+            AudioSource voice = null;
+            if (clip != null)
+            {
+                voice = _mainCam.gameObject.AddComponent<AudioSource>();
+                voice.spatialBlend = 0f;
+                voice.clip = clip;
+                voice.Play();
+            }
+            for (float t = 0f; t < duration; t += Time.deltaTime)
+            {
+                Vector3 look = _npcTransform.position + Vector3.up * 1.45f;
+                Vector3 camera = _npcTransform.position + _npcTransform.forward * 2.8f
+                    + _npcTransform.right * 0.65f + Vector3.up * 1.55f;
+                _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                yield return null;
+            }
+            if (voice != null) Destroy(voice);
+            // Try both directions along the street; stop rather than walking through a wall.
+            Vector3 direction = arrival.forward;
+            if (!CityCaptainStepClear(direction, 1f)) direction = -direction;
+            _npcTransform.rotation = Quaternion.LookRotation(direction);
+            Transform leftLeg = null, rightLeg = null;
+            Quaternion leftRest = Quaternion.identity, rightRest = Quaternion.identity;
+            if (_captainAnimator != null && _captainAnimator.isHuman)
+            {
+                leftLeg = _captainAnimator.GetBoneTransform(HumanBodyBones.LeftUpperLeg);
+                rightLeg = _captainAnimator.GetBoneTransform(HumanBodyBones.RightUpperLeg);
+                if (leftLeg != null) leftRest = leftLeg.localRotation;
+                if (rightLeg != null) rightRest = rightLeg.localRotation;
+                _captainAnimator.enabled = false;
+            }
+            for (float t = 0f; t < 4.5f; t += Time.deltaTime)
+            {
+                float step = 1.35f * Time.deltaTime;
+                if (!CityCaptainStepClear(direction, Mathf.Max(step, 0.5f))) break;
+                Vector3 next = _npcTransform.position + direction * step;
+                bool grounded = false;
+                float groundY = float.NegativeInfinity;
+                foreach (RaycastHit hit in Physics.RaycastAll(next + Vector3.up * 1.5f,
+                    Vector3.down, 3f, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    if (hit.transform.IsChildOf(_npcTransform) || hit.transform.IsChildOf(_player.transform)
+                        || hit.normal.y < 0.65f) continue;
+                    groundY = Mathf.Max(groundY, hit.point.y);
+                    grounded = true;
+                }
+                if (!grounded) break;
+                next.y = groundY;
+                _npcTransform.position = next;
+                float swing = Mathf.Sin(t * 9f) * 23f;
+                if (leftLeg != null) leftLeg.localRotation = leftRest * Quaternion.Euler(swing, 0f, 0f);
+                if (rightLeg != null) rightLeg.localRotation = rightRest * Quaternion.Euler(-swing, 0f, 0f);
+                Vector3 look = _npcTransform.position + Vector3.up * 1.2f;
+                Vector3 camera = arrival.position - arrival.forward * 2f + Vector3.up * 1.7f;
+                _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                yield return null;
+            }
+            if (leftLeg != null) leftLeg.localRotation = leftRest;
+            if (rightLeg != null) rightLeg.localRotation = rightRest;
+            // End the departure on a cut, leaving no stationary captain at the arrival point.
+            _endingFade = 1f;
+            yield return new WaitForSeconds(0.25f);
+            _npcTransform.gameObject.SetActive(false);
+            _endingFade = 0f;
+        }
+
+        private bool CityCaptainStepClear(Vector3 direction, float distance)
+        {
+            foreach (RaycastHit hit in Physics.SphereCastAll(_npcTransform.position + Vector3.up * 0.9f,
+                0.3f, direction, distance, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (hit.transform.IsChildOf(_npcTransform) || hit.transform.IsChildOf(_player.transform)) continue;
+                return false;
+            }
+            return true;
         }
 
         private bool TryFindOpenWaterVoyage(out Vector3 start, out Vector3 end)
