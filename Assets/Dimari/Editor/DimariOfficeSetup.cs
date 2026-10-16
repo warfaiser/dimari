@@ -35,16 +35,28 @@ namespace Dimari.Editor
                 }
             if (building == null)
             { EditorUtility.DisplayDialog("Вход", "Не найдено выбранное здание office_building_1_with_base (2). Ничего не изменено.", "OK"); return; }
+            // The demo's shared collision mesh may omit the raised entrance platform.
+            // Add exact mesh colliders only to this building's missing surfaces.
+            int addedColliders = 0;
+            foreach (MeshFilter mesh in building.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (mesh.sharedMesh == null || mesh.GetComponent<Collider>() != null) continue;
+                MeshCollider collider = Undo.AddComponent<MeshCollider>(mesh.gameObject);
+                collider.sharedMesh = mesh.sharedMesh;
+                addedColliders++;
+            }
+            Physics.SyncTransforms();
+            int surfaceHits = 0, blockedPositions = 0;
             Vector3 inward = Vector3.ProjectOnPlane(building.position - seed, Vector3.up).normalized;
             if (inward.sqrMagnitude < 0.1f) inward = building.forward;
             Vector3 side = Vector3.Cross(Vector3.up, inward);
             bool found = false;
             Vector3 chosen = seed;
             // Prefer the current approach; search towards the door, then laterally around obstructions.
-            float[] offsets = { 0f, 1f, -1f, 2f, -2f };
+            float[] offsets = { 0f, 0.75f, -0.75f, 1.5f, -1.5f, 2.5f, -2.5f, 4f, -4f };
             foreach (float lateral in offsets)
             {
-                for (int step = 3; step >= -2; step--)
+                for (int step = 4; step >= -16; step--)
                 {
                     Vector3 candidate = seed + inward * step * 0.5f + side * lateral;
                     RaycastHit[] hits = Physics.RaycastAll(candidate + Vector3.up * 15f, Vector3.down, 40f,
@@ -52,10 +64,11 @@ namespace Dimari.Editor
                     System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
                     foreach (RaycastHit hit in hits)
                     {
-                        if (hit.normal.y < 0.8f || Mathf.Abs(hit.point.y - seed.y) > 5f) continue;
+                        if (hit.normal.y < 0.8f || Mathf.Abs(hit.point.y - seed.y) > 10f) continue;
+                        surfaceHits++;
                         Vector3 feet = hit.point + Vector3.up * 0.05f;
                         if (Physics.CheckCapsule(feet + Vector3.up * 0.4f, feet + Vector3.up * 1.5f,
-                            0.3f, ~0, QueryTriggerInteraction.Ignore)) continue;
+                            0.3f, ~0, QueryTriggerInteraction.Ignore)) { blockedPositions++; continue; }
                         chosen = feet; found = true; break;
                     }
                     if (found) break;
@@ -63,7 +76,14 @@ namespace Dimari.Editor
                 if (found) break;
             }
             if (!found)
-            { EditorUtility.DisplayDialog("Вход", "Не найден безопасный пол рядом со входом. Общий коллайдер города не изменён. Пришлите Console и скриншот входа.", "OK"); return; }
+            {
+                EditorSceneManager.MarkSceneDirty(scene);
+                Debug.LogWarning("[Dimari] Вход: добавлено коллайдеров здания=" + addedColliders +
+                    ", найдено поверхностей=" + surfaceHits + ", занятых мест=" + blockedPositions +
+                    ". Здание=" + building.name + ", позиция=" + building.position + ", исходная точка=" + seed);
+                EditorUtility.DisplayDialog("Вход", "Свободное место пока не найдено. Добавлены недостающие коллайдеры выбранного здания; общий коллайдер не изменён. Откройте Console и пришлите жёлтую строку [Dimari] Вход.", "OK");
+                return;
+            }
             Undo.RecordObject(entrance.transform, "Automatic administration entrance");
             entrance.transform.SetPositionAndRotation(chosen, Quaternion.LookRotation(inward));
             entrance.destinationScene = Destination;
