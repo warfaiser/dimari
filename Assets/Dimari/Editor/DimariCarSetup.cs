@@ -8,6 +8,99 @@ namespace Dimari.Editor
 {
     public static class DimariCarSetup
     {
+        [MenuItem("Dimari/Машина — подогнать колёса к аркам")]
+        public static void FitWheels()
+        {
+            if (Application.isPlaying) return;
+            var car = Object.FindAnyObjectByType<CityDriveableCar>();
+            if (car == null || car.wheelVisuals == null || car.wheelVisuals.Length != 4
+                || car.wheelVisuals.Any(w => w == null))
+            { EditorUtility.DisplayDialog("Колёса", "Сначала добавьте четыре визуальных колеса.", "OK"); return; }
+            Transform visual = car.transform.Find("CarVisual");
+            if (visual == null) return;
+            // Read vertices from the asset mesh, not the renderer's rotated world AABB.
+            var vertices = new System.Collections.Generic.List<Vector3>();
+            foreach (MeshFilter filter in visual.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (filter.sharedMesh == null) continue;
+                using (var data = Mesh.AcquireReadOnlyMeshData(filter.sharedMesh))
+                {
+                    var points = new Unity.Collections.NativeArray<Vector3>(data[0].vertexCount, Unity.Collections.Allocator.Temp);
+                    data[0].GetVertices(points);
+                    foreach (Vector3 point in points)
+                        vertices.Add(car.transform.InverseTransformPoint(filter.transform.TransformPoint(point)));
+                    points.Dispose();
+                }
+            }
+            if (vertices.Count < 100) { Debug.LogWarning("[Dimari] Недостаточно геометрии для поиска арок."); return; }
+            Vector3 min = vertices[0], max = vertices[0];
+            foreach (Vector3 v in vertices) { min = Vector3.Min(min, v); max = Vector3.Max(max, v); }
+            float width = max.x - min.x, length = max.z - min.z;
+            float mid = (max.z + min.z) * 0.5f;
+            Vector3[] centers = new Vector3[4];
+            float[] radii = new float[4];
+            for (int i = 0; i < 4; i++)
+            {
+                float sign = i % 2 == 0 ? -1 : 1;
+                // An empty wheel mount, when supplied by the author, beats any geometric guess.
+                Transform mount = visual.GetComponentsInChildren<Transform>(true)
+                    .Where(t => t.name.ToLowerInvariant().Contains("wheel") && t.GetComponent<Renderer>() == null)
+                    .Where(t => { var p = car.transform.InverseTransformPoint(t.position);
+                        return p.x * sign > width * 0.2f && (i < 2 ? p.z > mid : p.z < mid); })
+                    .OrderBy(t => Vector3.Distance(t.position, car.wheels[i].transform.position)).FirstOrDefault();
+                if (mount != null)
+                {
+                    centers[i] = car.transform.InverseTransformPoint(mount.position);
+                    radii[i] = car.wheels[i].radius;
+                    continue;
+                }
+                float bestHeight = float.NegativeInfinity, bestZ = 0;
+                // Wheel openings lift the lower edge of the outer side panel.
+                for (int sample = 0; sample <= 60; sample++)
+                {
+                    float fraction = Mathf.Lerp(0.12f, 0.4f, sample / 60f);
+                    float z = mid + (i < 2 ? 1 : -1) * length * fraction;
+                    float bottom = float.PositiveInfinity;
+                    int count = 0;
+                    foreach (Vector3 v in vertices)
+                    {
+                        if (v.x * sign < width * 0.36f || Mathf.Abs(v.z - z) > length * 0.018f) continue;
+                        bottom = Mathf.Min(bottom, v.y); count++;
+                    }
+                    if (count < 3 || bottom < min.y + 0.12f || bottom > min.y + 1f) continue;
+                    if (bottom > bestHeight) { bestHeight = bottom; bestZ = z; }
+                }
+                if (float.IsNegativeInfinity(bestHeight))
+                { EditorUtility.DisplayDialog("Колёса", "Не удалось надёжно определить все арки. Ничего не перемещено. Нужен скриншот раскрытого CarVisual.", "OK"); return; }
+                float radius = Mathf.Clamp((bestHeight - min.y) * 0.48f, 0.27f, 0.48f);
+                centers[i] = new Vector3(sign * width * 0.405f, min.y + radius + 0.015f, bestZ);
+                radii[i] = radius;
+            }
+            Undo.RecordObject(car, "Fit wheel arches");
+            for (int i = 0; i < 4; i++)
+            {
+                Undo.RecordObject(car.wheels[i], "Fit wheel physics");
+                Undo.RecordObject(car.wheels[i].transform, "Fit wheel physics position");
+                Undo.RecordObject(car.wheelVisuals[i], "Fit visual wheel");
+                float scale = radii[i] / car.wheels[i].radius;
+                car.wheelVisuals[i].localScale *= scale;
+                car.wheelVisuals[i].localPosition = centers[i];
+                // Match initial wheel pose to the suspension's target compression.
+                car.wheels[i].transform.localPosition = centers[i] + Vector3.up * car.wheels[i].suspensionDistance * 0.5f;
+                car.wheels[i].radius = radii[i];
+            }
+            Rigidbody body = car.GetComponent<Rigidbody>();
+            Undo.RecordObject(body, "Car rigidbody settings");
+            body.mass = 1450;
+            body.interpolation = RigidbodyInterpolation.Interpolate;
+            body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+            EditorUtility.SetDirty(car);
+            EditorSceneManager.MarkSceneDirty(car.gameObject.scene);
+            EditorSceneManager.SaveScene(car.gameObject.scene);
+            Selection.activeGameObject = car.gameObject;
+            Debug.Log("[Dimari] Колёса подогнаны по точкам модели/нижней кромке арок. Геометрический подбор приблизительный: проверьте вид сбоку перед вождением. Изменения можно отменить через Undo.");
+        }
+
         [MenuItem("Dimari/Машина — добавить недостающие колёса")]
         public static void AddMissingWheels()
         {
