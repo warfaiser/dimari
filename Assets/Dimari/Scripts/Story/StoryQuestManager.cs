@@ -2096,7 +2096,7 @@ namespace Dimari.Story
                 {
                     Vector3 look = _player.transform.position + Vector3.up * 1.3f;
                     Vector3 camera = look - _player.transform.forward * 3f + _shipTransform.right * 1.2f + Vector3.up * 0.6f;
-                    _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(sailingLookTarget - camera));
+                    _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
                 }
                 yield return null;
             }
