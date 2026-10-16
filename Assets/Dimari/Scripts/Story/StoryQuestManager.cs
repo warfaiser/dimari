@@ -2096,7 +2096,7 @@ namespace Dimari.Story
                 {
                     Vector3 look = _player.transform.position + Vector3.up * 1.3f;
                     Vector3 camera = look - _player.transform.forward * 3f + _shipTransform.right * 1.2f + Vector3.up * 0.6f;
-                    _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                    _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(sailingLookTarget - camera));
                 }
                 yield return null;
             }
@@ -2208,10 +2208,10 @@ namespace Dimari.Story
             if (_isSailing)
             {
                 float orbit = Mathf.Sin(_sailingElapsed * 0.07f);
-                Vector3 look = _shipTransform.position + Vector3.up * 5f;
+                Vector3 sailingLookTarget = _shipTransform.position + Vector3.up * 5f;
                 Vector3 camera = _shipTransform.position + _shipTransform.right * (23f + orbit * 5f)
                     - _shipTransform.forward * 18f + Vector3.up * 13f;
-                _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
+                _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(sailingLookTarget - camera));
                 return;
             }
             Vector3 heroHead = _player.transform.position + Vector3.up * 1.5f;
