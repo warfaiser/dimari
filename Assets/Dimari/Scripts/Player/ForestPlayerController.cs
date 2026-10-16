@@ -427,6 +427,9 @@ namespace Dimari.Player
 
             if (moveInput != Vector2.zero)
             {
+                // Use the rendered camera, not a stale cinematic rig / target reference.
+                Camera activeCamera = Camera.main;
+                if (activeCamera != null) cameraTransform = activeCamera.transform;
                 float camYaw = cameraTransform != null ? cameraTransform.eulerAngles.y : transform.eulerAngles.y;
                 _targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg + camYaw;
                 float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, _targetRotation, ref _rotationVelocity, rotationSmoothTime);

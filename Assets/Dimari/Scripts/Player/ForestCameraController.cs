@@ -78,7 +78,7 @@ namespace Dimari.Player
             _cutsceneEndRot = transform.rotation;
             if (target != null)
             {
-                _yaw = target.eulerAngles.y;
+                _yaw = transform.eulerAngles.y;
                 _pitch = 8f;
                 _characterRenderers = target.GetComponentsInChildren<Renderer>(true);
             }

@@ -50,6 +50,7 @@ namespace Dimari.Story
         [Min(10f)] public float sailingDistance = 120f;
         [Tooltip("Необязательно: конечная точка плавания в мировых координатах. Маршрут должен проходить по свободной воде.")]
         public Transform sailingDestination;
+        private Collider _cinematicStairCollider;
         private bool _isSailing;
         private Vector3 _sailingStart;
         private Vector3 _sailingEnd;
@@ -2036,25 +2037,53 @@ namespace Dimari.Story
                 Vector3 endA = local.center, endB = local.center;
                 if (alongZ) { endA.z = local.min.z; endB.z = local.max.z; }
                 else { endA.x = local.min.x; endB.x = local.max.x; }
-                Vector3 flatCaptain = captainLocal; flatCaptain.y = local.center.y;
-                Vector3 upper = (endA - flatCaptain).sqrMagnitude < (endB - flatCaptain).sqrMagnitude ? endA : endB;
-                Vector3 lower = upper == endA ? endB : endA;
-                upper.y = local.max.y + 0.02f;
-                lower.y = local.min.y + 0.02f;
+                // Determine direction from actual tread heights, not proximity to the captain.
+                MeshCollider stairCollider = mesh.GetComponent<MeshCollider>();
+                if (stairCollider == null)
+                {
+                    stairCollider = mesh.gameObject.AddComponent<MeshCollider>();
+                    stairCollider.sharedMesh = mesh.sharedMesh;
+                }
+                Physics.SyncTransforms();
+                Vector3 sampleA = Vector3.Lerp(endA, endB, 0.06f);
+                Vector3 sampleB = Vector3.Lerp(endA, endB, 0.94f);
+                if (!SampleStairSurface(stairCollider, sampleA, local.max.y + 1f, out sampleA) ||
+                    !SampleStairSurface(stairCollider, sampleB, local.max.y + 1f, out sampleB)) continue;
+                if (Mathf.Abs(sampleA.y - sampleB.y) < 0.15f) continue;
+                Vector3 upper = sampleA.y > sampleB.y ? sampleA : sampleB;
+                Vector3 lower = sampleA.y > sampleB.y ? sampleB : sampleA;
                 float distance = (upper - captainLocal).sqrMagnitude;
-                if (distance < best) { best = distance; bottom = lower; top = upper; }
+                if (distance < best)
+                {
+                    best = distance; bottom = lower; top = upper;
+                    _cinematicStairCollider = stairCollider;
+                }
             }
             return best < float.PositiveInfinity;
         }
 
-        private IEnumerator WalkShipSegment(Vector3 from, Vector3 to)
+        private bool SampleStairSurface(Collider collider, Vector3 local, float rayHeight, out Vector3 surface)
+        {
+            surface = local;
+            Vector3 origin = _shipTransform.TransformPoint(new Vector3(local.x, rayHeight, local.z));
+            Ray ray = new Ray(origin, -_shipTransform.up);
+            if (!collider.Raycast(ray, out RaycastHit hit, 30f)) return false;
+            surface = _shipTransform.InverseTransformPoint(hit.point) + Vector3.up * 0.025f;
+            return true;
+        }
+
+        private IEnumerator WalkShipSegment(Vector3 from, Vector3 to, bool onStairs = false)
         {
             float duration = Mathf.Max(0.3f, Vector3.Distance(from, to) / 1.25f);
             float elapsed = 0f;
             while (elapsed < duration)
             {
                 elapsed += Time.deltaTime;
-                _player.transform.position = _shipTransform.TransformPoint(Vector3.Lerp(from, to, Mathf.Clamp01(elapsed / duration)));
+                Vector3 step = Vector3.Lerp(from, to, Mathf.Clamp01(elapsed / duration));
+                if (onStairs && _cinematicStairCollider != null &&
+                    SampleStairSurface(_cinematicStairCollider, step, Mathf.Max(from.y, to.y) + 1f, out Vector3 tread))
+                    step.y = tread.y;
+                _player.transform.position = _shipTransform.TransformPoint(step);
                 Vector3 facing = Vector3.ProjectOnPlane(_shipTransform.TransformDirection(to - from), Vector3.up);
                 if (facing.sqrMagnitude > 0.001f) _player.transform.rotation = Quaternion.LookRotation(facing);
                 if (_characterAnimator != null)
@@ -2088,12 +2117,13 @@ namespace Dimari.Story
             Vector3 meetingLocal = captainLocal + Vector3.forward * 2f;
             if (TryFindShipStairRoute(captainLocal, out Vector3 stairBottom, out Vector3 stairTop))
             {
+                meetingLocal.y = stairTop.y;
                 Vector3 approachLocal = stairBottom + (stairBottom - stairTop).normalized * 1.5f;
                 approachLocal.y = stairBottom.y;
                 _player.transform.position = _shipTransform.TransformPoint(approachLocal);
                 _endingFade = 0f;
                 yield return WalkShipSegment(approachLocal, stairBottom);
-                yield return WalkShipSegment(stairBottom, stairTop);
+                yield return WalkShipSegment(stairBottom, stairTop, true);
                 yield return WalkShipSegment(stairTop, meetingLocal);
             }
             else
