@@ -126,6 +126,11 @@ namespace Dimari.Story
         private Transform _pierWalkEndPoint;
         private Transform _shipTransform;
         private Transform _npcTransform;
+        private Animator _captainAnimator;
+        private Transform _captainWheel;
+        private Transform _wheelLeftGrip;
+        private Transform _wheelRightGrip;
+        private bool _captainConversationActive;
         private Vector3 _shipBasePos;
         private Quaternion _shipBaseRot;
 
@@ -566,6 +571,15 @@ namespace Dimari.Story
 
             SpawnNpcCharacterAtShip(npcObj.transform);
             _npcTransform = npcObj.transform;
+            _captainAnimator = npcObj.GetComponentInChildren<Animator>();
+            foreach (Transform part in shipObj.GetComponentsInChildren<Transform>(true))
+            {
+                string partName = part.name.ToLowerInvariant();
+                if (partName == "helmleftgrip") _wheelLeftGrip = part;
+                if (partName == "helmrightgrip") _wheelRightGrip = part;
+                if (_captainWheel == null && (partName.Contains("wheel") || partName.Contains("steering") || partName == "helm"))
+                    _captainWheel = part;
+            }
 
             BoxCollider triggerCol = root.gameObject.AddComponent<BoxCollider>();
             triggerCol.center = new Vector3(0f, 1.0f, 0.5f);
@@ -1471,6 +1485,7 @@ namespace Dimari.Story
 
         private void LateUpdate()
         {
+            ApplyCaptainHelmPose();
             if (!_isMenuOpen)
             {
                 if (_isPlayingPickupAnim)
@@ -1527,6 +1542,58 @@ namespace Dimari.Story
             {
                 _mainCam.transform.rotation = lookDirect * Quaternion.Euler(0f, +20f, 0f);
             }
+        }
+
+        private void ApplyCaptainHelmPose()
+        {
+            if (_captainAnimator == null || !_captainAnimator.isHuman || _npcTransform == null ||
+                _captainWheel == null) return;
+            Vector3 wheelCenter = _captainWheel.position;
+            Renderer wheelRenderer = _captainWheel.GetComponent<Renderer>();
+            if (wheelRenderer != null) wheelCenter = wheelRenderer.bounds.center;
+            Vector3 forward = Vector3.ProjectOnPlane(wheelCenter - _npcTransform.position, _shipTransform.up);
+            if (forward.sqrMagnitude > 0.01f)
+                _npcTransform.rotation = Quaternion.LookRotation(forward, _shipTransform.up);
+            Vector3 right = _npcTransform.right;
+            Vector3 leftGrip = _wheelLeftGrip != null ? _wheelLeftGrip.position : wheelCenter - right * 0.27f;
+            Vector3 rightGrip = _wheelRightGrip != null ? _wheelRightGrip.position : wheelCenter + right * 0.27f;
+            PoseCaptainArm(HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand, leftGrip, -right);
+            PoseCaptainArm(HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand, rightGrip, right);
+            if (_captainConversationActive && _player != null)
+            {
+                Transform head = _captainAnimator.GetBoneTransform(HumanBodyBones.Head);
+                if (head != null)
+                {
+                    Vector3 direction = _player.transform.position + Vector3.up * 1.5f - head.position;
+                    if (direction.sqrMagnitude > 0.001f)
+                    {
+                        Quaternion desired = Quaternion.LookRotation(direction, _shipTransform.up);
+                        head.rotation = Quaternion.RotateTowards(head.rotation, desired, 55f);
+                    }
+                }
+            }
+        }
+
+        private void PoseCaptainArm(HumanBodyBones upperBone, HumanBodyBones lowerBone,
+            HumanBodyBones handBone, Vector3 grip, Vector3 outward)
+        {
+            Transform upper = _captainAnimator.GetBoneTransform(upperBone);
+            Transform lower = _captainAnimator.GetBoneTransform(lowerBone);
+            Transform hand = _captainAnimator.GetBoneTransform(handBone);
+            if (upper == null || lower == null || hand == null) return;
+            // Analytic two-bone reach, preserving bone lengths.
+            float a = Vector3.Distance(upper.position, lower.position);
+            float b = Vector3.Distance(lower.position, hand.position);
+            Vector3 delta = grip - upper.position;
+            if (a < 0.001f || b < 0.001f || delta.sqrMagnitude < 0.001f) return;
+            float distance = Mathf.Clamp(delta.magnitude, Mathf.Abs(a - b) + 0.001f, a + b - 0.001f);
+            Vector3 direction = delta.normalized;
+            Vector3 bend = Vector3.ProjectOnPlane(outward - _shipTransform.up * 0.4f, direction).normalized;
+            float x = (a * a - b * b + distance * distance) / (2f * distance);
+            Vector3 elbow = upper.position + direction * x + bend * Mathf.Sqrt(Mathf.Max(0f, a * a - x * x));
+            upper.rotation = Quaternion.FromToRotation(lower.position - upper.position, elbow - upper.position) * upper.rotation;
+            lower.rotation = Quaternion.FromToRotation(hand.position - lower.position,
+                upper.position + direction * distance - lower.position) * lower.rotation;
         }
 
         private void AimArmAtWorldTargets(Transform upperArm, Transform lowerArm, Transform hand, Vector3 elbowTarget, Vector3 handTarget, float weight)
@@ -1989,6 +2056,7 @@ namespace Dimari.Story
                 _player.IsControlEnabled = true;
             }
 
+            _captainConversationActive = false;
             _isPlayingEndingCutscene = false;
             _isChapter2Reached = true;
             SaveGame();
@@ -2162,6 +2230,7 @@ namespace Dimari.Story
                 heroCaptainQuestion = Resources.Load<AudioClip>("Voice_Hero_CaptainQuestion");
             if (pirateCaptainAnswer == null)
                 pirateCaptainAnswer = Resources.Load<AudioClip>("Voice_Pirate_CaptainAnswer");
+            _captainConversationActive = true;
             const string question = "Товарищ, где я? Я не помню, как я тут оказался. Подскажите, где я?";
             const string answer = "Слышь, сухопутная крыса, ты на необитаемом острове! И скажу я тебе по-честному: повезло тебе, что старый морской волк бросил тут свой якорь. Прыгай на борт — и мы с тобой доплывём до города, чтоб меня черти драли!";
             yield return CaptainDialogueLine("Герой: " + question, heroCaptainQuestion, 7f, false, meetingLocal);
@@ -2220,6 +2289,9 @@ namespace Dimari.Story
             {
                 elapsed += Time.deltaTime;
                 _player.transform.position = _shipTransform.TransformPoint(heroLocalPosition);
+                Vector3 toCaptain = Vector3.ProjectOnPlane(_npcTransform.position - _player.transform.position, _shipTransform.up);
+                if (toCaptain.sqrMagnitude > 0.001f)
+                    _player.transform.rotation = Quaternion.LookRotation(toCaptain, _shipTransform.up);
                 FrameCaptainConversation(captainSpeaking);
                 yield return null;
             }
