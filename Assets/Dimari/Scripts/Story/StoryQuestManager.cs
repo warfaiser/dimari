@@ -61,6 +61,10 @@ namespace Dimari.Story
         public Transform cliffArrivalPoint;
         public float oceanLevel = -55f;
         public float oceanSize = 2000f;
+        [Header("Вода только перед обрывом")]
+        [Min(0f)] public float bayStartFromCliff = 12f;
+        [Min(80f)] public float bayWidth = 350f;
+        [Min(100f)] public float bayLength = 650f;
         public Material oceanMaterial;
         public Vector3 shipOffsetFromCliff = new Vector3(8f, 0f, 40f);
         public AudioClip shoutForHelpVoice;
@@ -595,9 +599,10 @@ namespace Dimari.Story
             GameObject ocean = GameObject.CreatePrimitive(PrimitiveType.Plane);
             ocean.name = "Dimari_SurroundingOcean";
             ocean.transform.SetParent(_shoreStartPoint.parent, true);
-            ocean.transform.position = new Vector3(cliffArrivalPoint.position.x, oceanLevel, cliffArrivalPoint.position.z);
-            ocean.transform.rotation = Quaternion.identity;
-            ocean.transform.localScale = new Vector3(Mathf.Max(100f, oceanSize) / 10f, 1f, Mathf.Max(100f, oceanSize) / 10f);
+            Vector3 center = cliffArrivalPoint.position + BayRotation() * Vector3.forward * (bayStartFromCliff + bayLength * 0.5f);
+            center.y = oceanLevel;
+            ocean.transform.SetPositionAndRotation(center, BayRotation());
+            ocean.transform.localScale = new Vector3(Mathf.Max(80f, bayWidth) / 10f, 1f, Mathf.Max(100f, bayLength) / 10f);
             ocean.GetComponent<Renderer>().sharedMaterial = oceanMaterial != null ? oceanMaterial : fallback;
             Destroy(ocean.GetComponent<Collider>());
         }
@@ -605,7 +610,17 @@ namespace Dimari.Story
         public bool TryGetWaterHeight(Vector3 position, out float height)
         {
             height = oceanLevel;
-            return cliffArrivalPoint != null && _shipTransform != null && IsInsideOcean(position);
+            if (cliffArrivalPoint == null || _shipTransform == null || !IsInsideOcean(position)) return false;
+            // Never apply buoyancy on dry ground just because its Y is below sea level.
+            foreach (RaycastHit hit in Physics.RaycastAll(position + Vector3.up * 2f, Vector3.down,
+                4f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if ((_player != null && hit.transform.IsChildOf(_player.transform)) ||
+                    hit.transform.IsChildOf(_shipTransform)) continue;
+                if (hit.normal.y > 0.45f && hit.point.y >= position.y - 0.25f &&
+                    hit.point.y <= position.y + 0.4f) return false;
+            }
+            return true;
         }
 
         private void ConfigureBoardingDeck()
@@ -637,7 +652,11 @@ namespace Dimari.Story
 
         public bool CanBoardFromWater(Vector3 position)
         {
-            if (_shipTransform == null || _isPlayingEndingCutscene || _isBoardingFromWater || _isMenuOpen) return false;
+            if (_shipTransform == null || _isPlayingEndingCutscene || _isBoardingFromWater || _isMenuOpen ||
+                _player == null || !_player.IsSwimming || !TryGetWaterHeight(position, out float waterHeight)) return false;
+            if (position.y > waterHeight + 0.25f) return false;
+            Vector3 horizontalDistance = Vector3.ProjectOnPlane(position - _shipTransform.position, Vector3.up);
+            if (horizontalDistance.magnitude > Mathf.Max(12f, shipModelSize * 0.75f)) return false;
             foreach (Collider collider in _shipTransform.GetComponentsInChildren<Collider>())
             {
                 if (!collider.enabled || collider.isTrigger) continue;
@@ -2366,12 +2385,17 @@ namespace Dimari.Story
             return false;
         }
 
+        private Quaternion BayRotation()
+        {
+            return Quaternion.Euler(0f, cliffArrivalPoint != null ? cliffArrivalPoint.eulerAngles.y : 0f, 0f);
+        }
+
         private bool IsInsideOcean(Vector3 point)
         {
             if (cliffArrivalPoint == null) return false;
-            float half = Mathf.Max(100f, oceanSize) * 0.5f - Mathf.Max(45f, shipModelSize);
-            return Mathf.Abs(point.x - cliffArrivalPoint.position.x) < half &&
-                Mathf.Abs(point.z - cliffArrivalPoint.position.z) < half;
+            Vector3 local = Quaternion.Inverse(BayRotation()) * (point - cliffArrivalPoint.position);
+            return Mathf.Abs(local.x) < Mathf.Max(80f, bayWidth) * 0.5f &&
+                local.z > bayStartFromCliff && local.z < bayStartFromCliff + Mathf.Max(100f, bayLength);
         }
 
         private IEnumerator PlaySailingToRogovo()
