@@ -8,6 +8,46 @@ namespace Dimari.Editor
 {
     public static class DimariCarSetup
     {
+        [MenuItem("Dimari/Машина — поправка колёс SportCar_1")]
+        public static void RefineSportCarWheels()
+        {
+            if (Application.isPlaying) return;
+            var car = Object.FindAnyObjectByType<CityDriveableCar>();
+            if (car == null || car.wheels == null || car.wheels.Length != 4 ||
+                car.wheelVisuals == null || car.wheelVisuals.Length != 4 ||
+                car.wheelVisuals.Any(t => t == null) || car.wheels.Any(w => w == null))
+            { EditorUtility.DisplayDialog("Колёса", "Нужна установленная машина с четырьмя колёсами.", "OK"); return; }
+            Transform visual = car.transform.Find("CarVisual");
+            if (visual == null || !visual.GetComponentsInChildren<MeshFilter>().Any(f => f.sharedMesh != null && f.sharedMesh.name == "Mac_3"))
+            { EditorUtility.DisplayDialog("Колёса", "Эта поправка предназначена только для показанной модели SportCar_1 (Mac_3).", "OK"); return; }
+            // Conservative first-pass calibration from the supplied SportCar_1 setup.
+            // Absolute targets make repeat execution idempotent; longitudinal placement stays untouched.
+            Undo.IncrementCurrentGroup();
+            int group = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName("Refine SportCar wheels");
+            for (int i = 0; i < 4; i++)
+            {
+                WheelCollider physics = car.wheels[i];
+                Transform wheel = car.wheelVisuals[i];
+                float radius = i < 2 ? 0.25f : 0.26f;
+                Undo.RecordObject(wheel, "Wheel visual calibration");
+                Undo.RecordObject(physics, "Wheel radius calibration");
+                Undo.RecordObject(physics.transform, "Wheel suspension calibration");
+                Vector3 position = wheel.localPosition;
+                position.x = (i % 2 == 0 ? -1f : 1f) * 0.87f;
+                position.y = radius + 0.015f;
+                wheel.localScale *= radius / physics.radius;
+                wheel.localPosition = position;
+                physics.radius = radius;
+                physics.transform.localPosition = position + Vector3.up * physics.suspensionDistance * 0.5f;
+            }
+            Undo.CollapseUndoOperations(group);
+            EditorSceneManager.MarkSceneDirty(car.gameObject.scene);
+            EditorSceneManager.SaveScene(car.gameObject.scene);
+            Selection.activeGameObject = car.gameObject;
+            Debug.Log("[Dimari] Применена пробная поправка SportCar_1: радиусы 0.25/0.26 м, вылет ±0.87 м. Z сохранён. Повторный запуск не уменьшает колёса снова. Проверьте арки сбоку и сзади; Ctrl+Z отменяет всю поправку.");
+        }
+
         [MenuItem("Dimari/Машина — подогнать колёса к аркам")]
         public static void FitWheels()
         {
