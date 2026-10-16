@@ -12,6 +12,55 @@ namespace Dimari.Editor
         private const string Source = Folder + "/Demo/Demo Scene.unity";
         private const string Destination = "Assets/Dimari/Scenes/Rogovo_Administration.unity";
 
+        [MenuItem("Dimari/Администрация — создать вход в городе")]
+        public static void CreateEntrance()
+        {
+            if (Application.isPlaying) return;
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.name != "Chapter2_Rogovo")
+            { EditorUtility.DisplayDialog("Вход", "Откройте Chapter2_Rogovo и приблизьте Scene к двери администрации.", "OK"); return; }
+            if (Object.FindAnyObjectByType<Dimari.Story.AdministrationEntrance>() != null)
+            { EditorUtility.DisplayDialog("Вход", "Вход уже создан. Найдите AdministrationEntrance в Hierarchy.", "OK"); return; }
+            GameObject entrance = new GameObject("AdministrationEntrance");
+            Undo.RegisterCreatedObjectUndo(entrance, "Administration entrance");
+            entrance.AddComponent<Dimari.Story.AdministrationEntrance>();
+            if (SceneView.lastActiveSceneView != null) entrance.transform.position = SceneView.lastActiveSceneView.pivot;
+            Selection.activeGameObject = entrance;
+            if (System.IO.File.Exists(Destination))
+            {
+                var scenes = new System.Collections.Generic.List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
+                scenes.RemoveAll(item => item.path == Destination);
+                scenes.Add(new EditorBuildSettingsScene(Destination, true));
+                EditorBuildSettings.scenes = scenes.ToArray();
+            }
+            EditorSceneManager.MarkSceneDirty(scene);
+            Debug.Log("[Dimari] Поставьте AdministrationEntrance ПЕРЕД дверью на уровне ног, снаружи стены. Синяя ось Z направлена в дверь. Сохраните город. Точка создана в центре обзора, не на поверхности автоматически.");
+        }
+
+        [MenuItem("Dimari/Администрация — создать точку в кабинете")]
+        public static void CreateOfficeArrival()
+        {
+            if (Application.isPlaying) return;
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.path != Destination)
+            { EditorUtility.DisplayDialog("Кабинет", "Откройте Rogovo_Administration.", "OK"); return; }
+            foreach (GameObject root in scene.GetRootGameObjects())
+                if (root.name == "AdministrationArrivalPoint") { Selection.activeGameObject = root; return; }
+            GameObject point = new GameObject("AdministrationArrivalPoint");
+            Undo.RegisterCreatedObjectUndo(point, "Office arrival");
+            if (SceneView.lastActiveSceneView != null) point.transform.position = SceneView.lastActiveSceneView.pivot;
+            foreach (GameObject root in scene.GetRootGameObjects())
+                foreach (MeshFilter mesh in root.GetComponentsInChildren<MeshFilter>(true))
+                {
+                    if (mesh.sharedMesh == null || mesh.GetComponent<Collider>() != null) continue;
+                    MeshCollider collider = Undo.AddComponent<MeshCollider>(mesh.gameObject);
+                    collider.sharedMesh = mesh.sharedMesh;
+                }
+            Selection.activeGameObject = point;
+            EditorSceneManager.MarkSceneDirty(scene);
+            Debug.Log("[Dimari] Поставьте AdministrationArrivalPoint на свободный пол кабинета, не в мебель. Z — направление взгляда. Проверьте коллайдеры пола и сохраните сцену.");
+        }
+
         [MenuItem("Dimari/Администрация — осветить интерьер")]
         public static void LightInterior()
         {
