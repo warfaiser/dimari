@@ -49,6 +49,7 @@ namespace Dimari.Story
         [Header("Плавание к Рогово")]
         [Tooltip("Путь к сцене Demo City, добавленной в Build Settings. Настройка: Dimari/Город — привязать выбранную сцену.")]
         public string cityScenePath = "";
+        private float _cityChapterTitleTimer;
         public bool playSailingCutscene = true;
         [Min(10f)] public float sailingDistance = 120f;
         [Tooltip("Необязательно: конечная точка плавания в мировых координатах. Маршрут должен проходить по свободной воде.")]
@@ -1423,6 +1424,7 @@ namespace Dimari.Story
             {
                 CompleteQuestStep("rogovo_exit", "");
             }
+            if (_cityChapterTitleTimer > 0f) _cityChapterTitleTimer -= Time.unscaledDeltaTime;
             if (_statusToastTimer > 0f)
             {
                 _statusToastTimer -= Time.unscaledDeltaTime;
@@ -2493,6 +2495,10 @@ namespace Dimari.Story
             _endingFade = 0f;
             _isChapter2Reached = false;
             _captainConversationActive = false;
+            _cityChapterTitleTimer = 7f;
+            _interactionPrompt = "";
+            _waitingForCaptainInteraction = false;
+            _showHUD = true;
             questSteps.Clear();
             questSteps.Add(new QuestStep { id = "city_administration", title = "Найти администрацию Рогово и узнать о Димарике." });
             ShowMonologue("Капитан: Вот мы и на месте, сухопутный. Теперь ищи своего Димарика!", 5f);
@@ -3129,6 +3135,12 @@ namespace Dimari.Story
                 return;
             }
 
+            if (_cityChapterTitleTimer > 0f)
+            {
+                GUI.Box(new Rect(Screen.width * 0.5f - 250f, 100f, 500f, 75f),
+                    "<color=#FFE18A><size=26><b>ГЛАВА 2 — РОГОВО</b></size></color>\n<color=#FFFFFF>Поиски Димарика продолжаются</color>",
+                    new GUIStyle(GUI.skin.box) { richText = true, alignment = TextAnchor.MiddleCenter });
+            }
             if (_isChapter2Reached)
             {
                 DrawChapter2TransitionOverlay();
