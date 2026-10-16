@@ -1889,8 +1889,8 @@ namespace Dimari.Story
                 if (_player != null)
                 {
                     Vector3 stepPosition = Vector3.Lerp(walkStart, walkEnd, norm);
-                    _player.transform.position = cliffArrivalPoint != null
-                        ? GroundCinematicPosition(stepPosition) : stepPosition;
+                    if (cliffArrivalPoint != null) PlaceHeroOnCliffSurface(stepPosition);
+                    else _player.transform.position = stepPosition;
                     _player.transform.rotation = walkRot;
                 }
 
@@ -1926,6 +1926,12 @@ namespace Dimari.Story
                 yield return null;
             }
 
+            if (cliffArrivalPoint != null && _player != null)
+            {
+                PlaceHeroOnCliffSurface(walkEnd);
+                walkEnd = _player.transform.position;
+            }
+
             // Персонаж останавливается у края причала перед кораблём (переход в стойку Idle)
             if (_characterAnimator != null)
             {
@@ -1953,6 +1959,7 @@ namespace Dimari.Story
 
             while (t < revealDuration)
             {
+                if (cliffArrivalPoint != null && _player != null) PlaceHeroOnCliffSurface(walkEnd);
                 t += Time.deltaTime;
                 float norm = Mathf.Clamp01(t / revealDuration);
                 float smooth = Mathf.SmoothStep(0f, 1f, norm);
@@ -1987,9 +1994,25 @@ namespace Dimari.Story
             SaveGame();
         }
 
+        private void PlaceHeroOnCliffSurface(Vector3 position)
+        {
+            Vector3 ground = GroundCinematicPosition(position);
+            _player.transform.position = ground;
+            if (_characterAnimator == null || !_characterAnimator.isHuman) return;
+            Transform left = _characterAnimator.GetBoneTransform(HumanBodyBones.LeftFoot);
+            Transform right = _characterAnimator.GetBoneTransform(HumanBodyBones.RightFoot);
+            if (left == null || right == null) return;
+            // Foot bones sit above the sole. Correct only small rig/root offsets;
+            // never pull a raised walking foot all the way down to the ground.
+            float lowestFoot = Mathf.Min(left.position.y, right.position.y);
+            float soleClearance = 0.08f;
+            float correction = Mathf.Clamp(ground.y + soleClearance - lowestFoot, -0.25f, 0.35f);
+            _player.transform.position += Vector3.up * correction;
+        }
+
         private Vector3 GroundCinematicPosition(Vector3 position)
         {
-            float nearest = float.PositiveInfinity;
+            float bestHeight = float.NegativeInfinity;
             Vector3 result = position;
             foreach (RaycastHit hit in Physics.RaycastAll(position + Vector3.up * 4f, Vector3.down,
                 12f, ~0, QueryTriggerInteraction.Ignore))
@@ -1997,8 +2020,9 @@ namespace Dimari.Story
                 if (hit.transform.IsChildOf(_player.transform) ||
                     (_shipTransform != null && hit.transform.IsChildOf(_shipTransform))) continue;
                 if (hit.normal.y < 0.45f) continue;
-                float delta = Mathf.Abs(hit.point.y - position.y);
-                if (delta < nearest) { nearest = delta; result.y = hit.point.y + 0.02f; }
+                // Prefer the upper walkable surface, not a lower overlapping rock collider.
+                if (hit.point.y > position.y + 1.5f) continue;
+                if (hit.point.y > bestHeight) { bestHeight = hit.point.y; result.y = hit.point.y + 0.04f; }
             }
             return result;
         }
