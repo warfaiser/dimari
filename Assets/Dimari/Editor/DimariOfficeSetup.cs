@@ -12,6 +12,67 @@ namespace Dimari.Editor
         private const string Source = Folder + "/Demo/Demo Scene.unity";
         private const string Destination = "Assets/Dimari/Scenes/Rogovo_Administration.unity";
 
+        [MenuItem("Dimari/Администрация — осветить интерьер")]
+        public static void LightInterior()
+        {
+            if (Application.isPlaying) return;
+            Scene scene = SceneManager.GetActiveScene();
+            if (scene.path != Destination)
+            {
+                EditorUtility.DisplayDialog("Свет", "Сначала откройте Assets/Dimari/Scenes/Rogovo_Administration.unity", "OK");
+                return;
+            }
+            Transform room = null;
+            foreach (GameObject root in scene.GetRootGameObjects())
+                foreach (Transform child in root.GetComponentsInChildren<Transform>(true))
+                    if (child.name == "OfficeRoom") room = child;
+            if (room == null)
+            {
+                EditorUtility.DisplayDialog("Свет", "Не найден OfficeRoom. Пришлите скриншот раскрытой Hierarchy.", "OK");
+                return;
+            }
+            Renderer[] renderers = room.GetComponentsInChildren<Renderer>();
+            if (renderers.Length == 0) return;
+            Bounds bounds = renderers[0].bounds;
+            foreach (Renderer renderer in renderers) bounds.Encapsulate(renderer.bounds);
+            if (bounds.size.y < 1.8f || bounds.size.x > 100f || bounds.size.z > 100f)
+            {
+                EditorUtility.DisplayDialog("Свет", "Необычный масштаб OfficeRoom. Нужна проверка размеров перед расстановкой света.", "OK");
+                return;
+            }
+            GameObject rig = null;
+            foreach (GameObject root in scene.GetRootGameObjects())
+                if (root.name == "Dimari_OfficeLighting") rig = root;
+            if (rig != null) Undo.DestroyObjectImmediate(rig);
+            rig = new GameObject("Dimari_OfficeLighting");
+            Undo.RegisterCreatedObjectUndo(rig, "Office lighting");
+            float ceiling = bounds.max.y - 0.45f;
+            // Four soft lights distribute illumination without depending on old baked data.
+            for (int x = -1; x <= 1; x += 2)
+                for (int z = -1; z <= 1; z += 2)
+                {
+                    GameObject lamp = new GameObject("Ceiling soft light");
+                    lamp.transform.SetParent(rig.transform);
+                    lamp.transform.position = new Vector3(bounds.center.x + x * bounds.size.x * 0.22f,
+                        ceiling, bounds.center.z + z * bounds.size.z * 0.22f);
+                    Light light = lamp.AddComponent<Light>();
+                    light.type = LightType.Point;
+                    light.color = new Color(1f, 0.94f, 0.84f);
+                    light.intensity = 2f;
+                    light.range = Mathf.Max(bounds.size.x, bounds.size.z, bounds.size.y) * 1.4f;
+                    light.shadows = LightShadows.None;
+                    light.lightmapBakeType = LightmapBakeType.Realtime;
+                    light.renderMode = LightRenderMode.ForcePixel;
+                }
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(0.32f, 0.34f, 0.38f);
+            RenderSettings.fog = false;
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
+            Selection.activeGameObject = rig;
+            Debug.Log("[Dimari] Добавлен мягкий свет в копию администрации. Яркость ламп регулируется параметром Intensity. Проверьте Scene/Game в URP.");
+        }
+
         [MenuItem("Dimari/Администрация — подготовить офис")]
         public static void Prepare()
         {
