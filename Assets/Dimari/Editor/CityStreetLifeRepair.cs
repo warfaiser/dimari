@@ -14,7 +14,7 @@ namespace Dimari.Editor
     [InitializeOnLoad]
     public static class CityStreetLifeRepair
     {
-        const string Stamp="Street population repair v1";
+        const string Stamp="Street population repair v2";
         static CityStreetLifeRepair()
         {EditorApplication.delayCall+=Auto;EditorSceneManager.sceneOpened+=(scene,mode)=>EditorApplication.delayCall+=Auto;}
         static void Auto()
@@ -25,6 +25,20 @@ namespace Dimari.Editor
         }
         [MenuItem("Dimari/Город — исправить прохожих, трафик и разговоры")]
         public static void Install(){Apply(true);}
+        [MenuItem("Dimari/Город — открыть главу 2 и применить исправление")]
+        public static void OpenAndRepair()
+        {
+            if(EditorApplication.isPlayingOrWillChangePlaymode){EditorUtility.DisplayDialog("Город","Сначала остановите Play.","OK");return;}
+            if(SceneManager.GetActiveScene().name!="Chapter2_Rogovo")
+            {
+                string path=null;foreach(string guid in AssetDatabase.FindAssets("Chapter2_Rogovo t:Scene"))
+                {string candidate=AssetDatabase.GUIDToAssetPath(guid);if(System.IO.Path.GetFileNameWithoutExtension(candidate)=="Chapter2_Rogovo"){path=candidate;break;}}
+                if(path==null){EditorUtility.DisplayDialog("Город","Не найдена сцена Chapter2_Rogovo в Assets.","OK");return;}
+                if(!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())return;
+                EditorSceneManager.OpenScene(path,OpenSceneMode.Single);
+            }
+            Apply(true);
+        }
         static List<int> Connected(CityLifeGraph graph,int minimum)
         {
             var result=new List<int>();if(graph==null||graph.nodes==null)return result;
@@ -73,8 +87,11 @@ namespace Dimari.Editor
                     if(agent.vehicle)cars.Add(agent);else walkers.Add(agent);
                 }
                 var anchors=new List<Vector3>();
+                Transform arrival=null;
+                foreach(var candidate in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include,FindObjectsSortMode.None))if(candidate.gameObject.scene==city.scene&&candidate.name=="CityArrivalPoint"){arrival=candidate;break;}
+                if(arrival!=null)anchors.Add(arrival.position);
+                var player=Object.FindAnyObjectByType<ForestPlayerController>();if(player!=null&&player.gameObject.scene==city.scene)anchors.Add(player.transform.position);
                 var admin=Object.FindAnyObjectByType<AdministrationEntrance>();if(admin!=null)anchors.Add(admin.transform.position);
-                var player=Object.FindAnyObjectByType<ForestPlayerController>();if(player!=null)anchors.Add(player.transform.position);
                 var pizza=GameObject.Find("Dimari_PizzaExpress24");if(pizza!=null)anchors.Add(pizza.transform.position);
                 var gym=GameObject.Find("Dimari_Donsport");if(gym!=null)anchors.Add(gym.transform.position);
                 if(anchors.Count==0)anchors.Add(city.transform.position);
@@ -111,11 +128,11 @@ namespace Dimari.Editor
         static int Populate(Transform root,CityLifeGraph graph,List<int> nodes,List<Vector3> anchors,List<CityLifeAgent> existing,List<GameObject> people,CityDriveableCar source,int maximum,bool vehicle)
         {
             if(graph==null||nodes.Count==0)return 0;
-            var used=new List<Vector3>();int count=0;
+            var used=new List<Vector3>();int count=0,lastGroupSlot=-2;
             for(int slot=0;slot<maximum;slot++)
             {
-                bool pair=!vehicle&&count%2==1&&used.Count>0;
-                Vector3 anchor=pair?used[used.Count-1]:anchors[slot%anchors.Count];int best=-1;float nearest=float.PositiveInfinity;
+                bool pair=!vehicle&&slot%2==1&&lastGroupSlot==slot-1&&used.Count>0;
+                Vector3 anchor=pair?used[used.Count-1]:anchors[(vehicle?slot:slot/2)%anchors.Count];int best=-1;float nearest=float.PositiveInfinity;
                 foreach(int index in nodes)
                 {
                     Vector3 p=graph.nodes[index].position;float distance=(p-anchor).sqrMagnitude;if(distance>100*100||distance>=nearest)continue;
@@ -170,7 +187,7 @@ namespace Dimari.Editor
                     if(!empty){var box=agent.GetComponent<BoxCollider>();if(box==null)box=Undo.AddComponent<BoxCollider>(agent.gameObject);else Undo.RecordObject(box,"Fit traffic collider to imported model");box.center=local.center;box.size=local.size;}
                 }
                 agent.graph=graph;agent.previous=best;agent.node=target;agent.groundOffset=agent.transform.position.y-graph.nodes[best].position.y;agent.speed=vehicle?3.5f+(count%4)*0.6f:0.9f+(count%4)*0.12f;
-                agent.talkingUntil=0;agent.speakingUntil=0;agent.conversationPartner=null;used.Add(point);count++;
+                agent.talkingUntil=0;agent.speakingUntil=0;agent.conversationPartner=null;used.Add(point);if(!pair)lastGroupSlot=slot;count++;
             }
             return count;
         }

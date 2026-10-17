@@ -162,6 +162,8 @@ namespace Dimari.Player
             _controller.height = 1.8f;
             _controller.radius = 0.28f;
             _controller.skinWidth = 0.04f;
+            _controller.minMoveDistance = 0f;
+            if (GetComponent<Dimari.City.CityGameplayDiagnostics>() == null) gameObject.AddComponent<Dimari.City.CityGameplayDiagnostics>();
             _controller.stepOffset = 0.35f;
             _controller.slopeLimit = 50f;
             _controller.center = new Vector3(0f, 0.93f, 0f);
@@ -527,8 +529,9 @@ namespace Dimari.Player
             _controller.Move(_horizontalVelocity * dt + Vector3.up * verticalStep);
             Vector3 actual = (transform.position - before) / dt; actual.y = 0f;
             _speed = actual.magnitude;
-            if (_speed < _horizontalVelocity.magnitude * 0.35f)
-            { _horizontalVelocity = actual; _movementDamping = Vector3.zero; }
+            // Do not reset the motor from tiny measured displacements. A nonzero prefab
+            // minMoveDistance/initial collision used to cancel SmoothDamp every frame,
+            // preventing acceleration from ever getting past its first step.
             float visibleSpeed = _speed < 0.12f ? 0f : _speed;
             _animationBlend = Mathf.Lerp(_animationBlend, visibleSpeed,
                 1f - Mathf.Exp(-Mathf.Max(1f, speedChangeRate) * dt));
