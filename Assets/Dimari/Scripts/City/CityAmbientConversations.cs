@@ -24,7 +24,6 @@ namespace Dimari.City
         void Awake()
         {
             bank.Add(new Talk(true,"Опять весь центр перекопали. Вчера до остановки десять минут шёл в обход.","Зато теперь у пиццерии можно спокойно пройти. Пойдём через площадь.",0));
-            bank.Add(new Talk(false,"В администрации сегодня видел какого-то парня. Всё спрашивал про пропавшего коллегу.","Надеюсь, найдётся. Тут все друг друга знают, поспрашивает и разберётся.",2));
             bank.Add(new Talk(true,"Я возьму пепперони. Только в этот раз давай без споров, кому достался последний кусок.","Тогда сразу две закажем. И салфеток побольше, у тебя опять весь стол будет в соусе.",4));
             bank.Add(new Talk(true,"Смотри, тут даже пицца с трюфелем есть. А я всё время одну маргариту беру.","Ну попробуй что-нибудь новое. Только сначала цену посмотри, любитель экспериментов.",6));
             string[] dimarik={
@@ -36,8 +35,6 @@ namespace Dimari.City
                 "Ты бы что делал, если друг вдруг пропал?|Позвонил общим знакомым. И не стал бы верить каждому слуху."
             };
             foreach(string line in dimarik){var parts=line.Split('|');bank.Add(new Talk(true,parts[0],parts[1],-1,"Димарик"));}
-            string[] street={"Автобус уже ушёл?|Ничего, следующий через десять минут.","Ночью дождь обещали.|Я зонт ещё утром в машине оставила.","У тебя телефон ловит?|Только возле перекрёстка, здесь опять пропадает сеть.","В парке фонари починили.|Отлично, можно вечером прогуляться.","Магазин ещё открыт?|До одиннадцати, успеем.","На работе сегодня тихо?|Тихо было, пока начальник не приехал."};
-            foreach(string line in street){var p=line.Split('|');bank.Add(new Talk(false,p[0],p[1]));}
             string[] cafe={
                 "Еда|Тебе какой кусок оставить?|Тот, где больше сыра.",
                 "Еда|Острая нормально?|Лучше соус отдельно попросим.",
@@ -90,7 +87,7 @@ namespace Dimari.City
             Camera camera=Camera.main;
             if(camera==null)return false;
             var view=camera.GetComponent<ForestCameraController>();
-            return view==null||(!view.IsMenuCameraActive&&!view.IsCutsceneControlled);
+            return InsidePizza()&&(view==null||(!view.IsMenuCameraActive&&!view.IsCutsceneControlled));
         }
         void Update()
         {
@@ -118,7 +115,7 @@ namespace Dimari.City
         bool CanHear(CityLifeAgent actor,bool requireVisible=false)
         {
             if(actor==null||player==null||actor.gameObject.scene!=player.gameObject.scene&&actor.gameObject.scene!=gameObject.scene)return false;
-            if(actor.seated&&!InsidePizza())return false;
+            if(!actor.seated||actor.vehicle||!InsidePizza())return false;
             Vector3 point=actor.transform.position+Vector3.up*1.2f;
             var animator=actor.GetComponentInChildren<Animator>();if(animator!=null&&animator.isHuman){var head=animator.GetBoneTransform(HumanBodyBones.Head);if(head!=null)point=head.position;}
             bool rendered=false;foreach(var r in actor.GetComponentsInChildren<Renderer>())if(r.enabled&&r.gameObject.activeInHierarchy){rendered=true;break;}
@@ -133,14 +130,14 @@ namespace Dimari.City
         {
             a=null;b=null;var agents=FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None);
             var building=GameObject.Find("Dimari_PizzaExpress24");Transform pizza=building!=null?building.transform:null;
-            bool indoors=InsidePizza();
+            if(pizza==null||!InsidePizza())return false;
             int candidates=0;
             for(int i=0;i<agents.Length;i++)
             {
-                var first=agents[i];if((first.seated&&!indoors)||!CanHear(first)||first.name=="Pizza seller Obzhorka"||(indoors&&!first.seated)||first.vehicle||first.gameObject.scene!=gameObject.scene||Time.time<first.talkingUntil||Vector3.Distance(first.transform.position,player.transform.position)>11)continue;
+                var first=agents[i];if(!first.seated||!CanHear(first)||first.name=="Pizza seller Obzhorka"||first.vehicle||first.gameObject.scene!=gameObject.scene||Time.time<first.talkingUntil||Vector3.Distance(first.transform.position,player.transform.position)>11)continue;
                 for(int j=i+1;j<agents.Length;j++)
                 {
-                    var second=agents[j];if(second.name=="Pizza seller Obzhorka"||second.vehicle||second.gameObject.scene!=gameObject.scene||Time.time<second.talkingUntil||first.seated!=second.seated||Vector3.Distance(second.transform.position,player.transform.position)>11||Vector3.Distance(first.transform.position,second.transform.position)>3.2f)continue;
+                    var second=agents[j];if(!second.seated||second.name=="Pizza seller Obzhorka"||second.vehicle||second.gameObject.scene!=gameObject.scene||Time.time<second.talkingUntil||first.seated!=second.seated||Vector3.Distance(second.transform.position,player.transform.position)>11||Vector3.Distance(first.transform.position,second.transform.position)>3.2f)continue;
                     if(first.seated&&(pizza==null||Table(first,pizza)<0||Table(first,pizza)!=Table(second,pizza)))continue;
                     if(!CanHear(second)||(!CanHear(first,true)&&!CanHear(second,true)))continue;
                     if((first==lastA&&second==lastB)||(first==lastB&&second==lastA))continue;
@@ -167,12 +164,12 @@ namespace Dimari.City
             {
                 if(player==null)player=FindAnyObjectByType<ForestPlayerController>();
                 if(!Allowed()||!ChoosePair(out CityLifeAgent a,out CityLifeAgent b)){yield return new WaitForSeconds(2);continue;}
-                activeA=a;activeB=b;lastA=a;lastB=b;Talk talk=ChooseTalk(a.seated);interrupted=false;
+                activeA=a;activeB=b;lastA=a;lastB=b;Talk talk=ChooseTalk(true);interrupted=false;
                 a.talkingUntil=b.talkingUntil=Time.time+90;a.conversationPartner=b.transform;b.conversationPartner=a.transform;
                 yield return Say(a,talk.a,talk.audio);
                 if(!interrupted)yield return Say(b,talk.b,talk.audio<0?-1:talk.audio+1);
-                bool cafe=a!=null&&a.seated;ClearActors();subtitle="";
-                yield return new WaitForSeconds(cafe?Random.Range(5f,10f):Random.Range(25f,45f));
+                ClearActors();subtitle="";
+                yield return new WaitForSeconds(Random.Range(5f,10f));
             }
         }
         void ClearActors()
