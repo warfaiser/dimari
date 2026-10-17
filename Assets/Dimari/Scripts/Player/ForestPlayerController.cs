@@ -19,6 +19,11 @@ namespace Dimari.Player
         public float rotationSmoothTime = 0.12f;
         public float speedChangeRate = 10.0f;
 
+        [Header("Плавность ходьбы")]
+        [Min(0.03f)] public float accelerationTime = 0.18f;
+        [Min(0.03f)] public float brakingTime = 0.11f;
+        [Range(0.3f, 1f)] public float backwardsSpeedMultiplier = 0.65f;
+
         [Header("Прыжок и гравитация")]
         public float jumpHeight = 1.2f;
         public float gravity = -15.0f;
@@ -47,6 +52,9 @@ namespace Dimari.Player
         public void StopLocomotionAnimation()
         {
             _speed = 0f;
+            _horizontalVelocity = Vector3.zero;
+            _movementDamping = Vector3.zero;
+            _footstepDistance = 0f;
             _animationBlend = 0f;
             CurrentNormalizedSpeed = 0f;
             UpdateLocomotionAnimator(0f, 0f);
@@ -72,6 +80,7 @@ namespace Dimari.Player
             { IsSwimming = false; return false; }
             float depth = water - transform.position.y;
             if (depth < (IsSwimming ? 0.55f : 0.85f)) { IsSwimming = false; return false; }
+            if (!IsSwimming) StopLocomotionAnimation();
             IsSwimming = true;
             IsGrounded = false;
             _ridingShip = null;
@@ -122,6 +131,8 @@ namespace Dimari.Player
                 }
             }
         }
+        private Vector3 _horizontalVelocity, _movementDamping;
+        private float _lastFootstepTime = -10f, _lastAnimationFootstepTime = -10f, _lastLandTime = -10f;
         private float _speed;
         private float _animationBlend;
         private float _targetRotation;
@@ -369,8 +380,8 @@ namespace Dimari.Player
             if (StoryQuestManager.Instance != null && StoryQuestManager.Instance.IsMenuOpen) return;
             CarryWithShip();
             if (UpdateSwimming()) return;
-            JumpAndGravity();
             GroundedCheck();
+            JumpAndGravity();
 
             if (IsControlEnabled)
             {
@@ -385,9 +396,7 @@ namespace Dimari.Player
             }
             else
             {
-                _animationBlend = Mathf.Lerp(_animationBlend, 0f, Time.deltaTime * speedChangeRate);
-                CurrentNormalizedSpeed = 0f;
-                UpdateLocomotionAnimator(0f, 0f);
+                StopLocomotionAnimation();
                 _controller.Move(new Vector3(0f, _verticalVelocity, 0f) * Time.deltaTime);
             }
         }
@@ -476,33 +485,17 @@ namespace Dimari.Player
                 }
             }
 
-            if (_verticalVelocity < _terminalVelocity)
-            {
-                _verticalVelocity += gravity * Time.deltaTime;
-            }
+            _verticalVelocity = Mathf.Max(_verticalVelocity + gravity * Time.deltaTime, -_terminalVelocity);
         }
 
         private void MoveCharacter()
         {
-            Vector2 moveInput = DimariInput.GetMoveInput();
-            bool isSprinting = DimariInput.IsSprintHeld();
-
+            float dt = Time.deltaTime;
+            if (dt <= 0f) return;
+            Vector2 moveInput = Vector2.ClampMagnitude(DimariInput.GetMoveInput(), 1f);
+            bool isSprinting = DimariInput.IsSprintHeld() && moveInput.y > 0.1f;
             float targetSpeed = isSprinting ? runSpeed : walkSpeed;
-            if (moveInput == Vector2.zero)
-            {
-                targetSpeed = 0.0f;
-            }
-
-            // CharacterController.velocity describes only the most recent Move call.
-            // A separate moving-deck carry must not reset locomotion acceleration.
-            _speed = Mathf.MoveTowards(_speed, targetSpeed, Mathf.Max(0.1f, speedChangeRate) * Time.deltaTime);
-
-            _animationBlend = Mathf.Lerp(_animationBlend, targetSpeed, Time.deltaTime * speedChangeRate);
-            if (_animationBlend < 0.01f) _animationBlend = 0f;
-
-            CurrentNormalizedSpeed = Mathf.Clamp01(_animationBlend / runSpeed);
-
-            Vector3 inputDirection = new Vector3(moveInput.x, 0.0f, moveInput.y).normalized;
+            if (moveInput.y < -0.1f) targetSpeed *= backwardsSpeedMultiplier;
 
             Camera activeCamera = Camera.main;
             if (activeCamera != null) cameraTransform = activeCamera.transform;
@@ -510,54 +503,69 @@ namespace Dimari.Player
                 ? cameraTransform.GetComponent<ForestCameraController>() : null;
             float facingYaw = view != null ? view.MovementYaw
                 : (cameraTransform != null ? cameraTransform.eulerAngles.y : transform.eulerAngles.y);
-            transform.rotation = Quaternion.Euler(0f, facingYaw, 0f);
-            // WASD is relative to mouse-facing direction; sideways/backwards input
-            // does not rotate the body away from the camera heading.
-            Vector3 targetDirection = Quaternion.Euler(0f, facingYaw, 0f) * inputDirection;
+            float bodyYaw = Mathf.SmoothDampAngle(transform.eulerAngles.y, facingYaw, ref _rotationVelocity,
+                Mathf.Max(0.03f, rotationSmoothTime), 720f, dt);
+            transform.rotation = Quaternion.Euler(0f, bodyYaw, 0f);
+            // W still follows mouse yaw, independently of the body's short visual turn easing.
+            Vector3 desired = Quaternion.Euler(0f, facingYaw, 0f) * new Vector3(moveInput.x, 0f, moveInput.y) * targetSpeed;
+            float smoothTime = desired.sqrMagnitude < _horizontalVelocity.sqrMagnitude ? brakingTime : accelerationTime;
+            _horizontalVelocity = Vector3.SmoothDamp(_horizontalVelocity, desired, ref _movementDamping,
+                Mathf.Max(0.03f, smoothTime), Mathf.Infinity, dt);
+            if (desired.sqrMagnitude < 0.0001f && _horizontalVelocity.sqrMagnitude < 0.0025f)
+            { _horizontalVelocity = Vector3.zero; _movementDamping = Vector3.zero; }
 
-            // При спуске по склону прижимаем движение к поверхности без второго вызова Move
-            float verticalStep = _verticalVelocity * Time.deltaTime;
-            if (IsGrounded && _verticalVelocity <= 0f && moveInput != Vector2.zero)
+            float verticalStep = _verticalVelocity * dt;
+            if (IsGrounded && _verticalVelocity <= 0f && _horizontalVelocity.sqrMagnitude > 0.01f)
+                verticalStep = -4.5f * dt;
+
+            // Measure only this locomotion Move, not the moving ship's separate carry step.
+            Vector3 before = transform.position;
+            _controller.Move(_horizontalVelocity * dt + Vector3.up * verticalStep);
+            Vector3 actual = (transform.position - before) / dt; actual.y = 0f;
+            _speed = actual.magnitude;
+            if (_speed < _horizontalVelocity.magnitude * 0.35f)
+            { _horizontalVelocity = actual; _movementDamping = Vector3.zero; }
+            float visibleSpeed = _speed < 0.12f ? 0f : _speed;
+            _animationBlend = Mathf.Lerp(_animationBlend, visibleSpeed,
+                1f - Mathf.Exp(-Mathf.Max(1f, speedChangeRate) * dt));
+            if (_animationBlend < 0.03f) _animationBlend = 0f;
+            CurrentNormalizedSpeed = Mathf.Clamp01(_speed / Mathf.Max(0.1f, runSpeed));
+
+            if (IsGrounded && _speed > 0.25f)
             {
-                verticalStep = -4.5f * Time.deltaTime;
+                _footstepDistance += _speed * dt;
+                float stepDistance = isSprinting ? 1.5f : 0.9f;
+                // Animation events are authoritative when present; this is only the fallback.
+                if (_footstepDistance >= stepDistance && Time.time - _lastAnimationFootstepTime > 0.6f)
+                { _footstepDistance %= stepDistance; PlayLocomotionFootstep(); }
             }
-
-            _controller.Move(targetDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, verticalStep, 0.0f));
-
-            // Резервный таймер шагов (если в контроллере анимаций нет встроенных AnimationEvents)
-            if (IsGrounded && _speed > 0.4f)
-            {
-                _footstepDistance += _speed * Time.deltaTime;
-                float stepInterval = isSprinting ? 2.1f : 1.45f;
-                if (_footstepDistance >= stepInterval)
-                {
-                    _footstepDistance = 0f;
-                    if (ProceduralForestAudio.Instance != null)
-                    {
-                        ProceduralForestAudio.Instance.PlayFootstep(isSprinting, _isStandingOnRock);
-                    }
-                }
-            }
-
+            else _footstepDistance = 0f;
             UpdateLocomotionAnimator(_animationBlend, moveInput.magnitude);
         }
 
         private void UpdateLocomotionAnimator(float blendSpeed, float inputMagnitude)
         {
             if (characterAnimator == null || characterAnimator.runtimeAnimatorController == null) return;
+            bool starter = HasParameter(characterAnimator, AnimIDMotionSpeed);
+            float walkThreshold = starter ? 2f : 0.5f;
+            float runThreshold = starter ? 6f : 1f;
+            // A normalized Speed = speed/runSpeed never reached the fallback's pure Walk at 0.5.
+            // Map both native blend trees explicitly so ordinary walking is not an idle/walk mixture.
+            float walk = Mathf.Max(0.1f, walkSpeed), run = Mathf.Max(walk + 0.1f, runSpeed);
+            float speedParam = blendSpeed <= walk
+                ? Mathf.Lerp(0f, walkThreshold, Mathf.Clamp01(blendSpeed / walk))
+                : Mathf.Lerp(walkThreshold, runThreshold, Mathf.InverseLerp(walk, run, blendSpeed));
+            if (HasParameter(characterAnimator, AnimIDSpeed)) characterAnimator.SetFloat(AnimIDSpeed, speedParam);
+            if (HasParameter(characterAnimator, AnimIDMotionSpeed)) characterAnimator.SetFloat(AnimIDMotionSpeed, 1f);
+        }
 
-            // В контроллере StarterAssetsThirdPerson пороги BlendTree: 0 = Idle, 2 = Walk_N, 6 = Run_N.
-            // В нашем запасном контроллере: 0 = Idle, 0.5 = Walk, 1.0 = Run.
-            bool isStarterAssetsController = HasParameter(characterAnimator, AnimIDMotionSpeed);
-            float speedParam = isStarterAssetsController
-                ? blendSpeed
-                : Mathf.Clamp01(blendSpeed / runSpeed);
-
-            if (HasParameter(characterAnimator, AnimIDSpeed))
-                characterAnimator.SetFloat(AnimIDSpeed, speedParam);
-
-            if (HasParameter(characterAnimator, AnimIDMotionSpeed))
-                characterAnimator.SetFloat(AnimIDMotionSpeed, inputMagnitude > 0.01f ? 1.0f : 1.0f);
+        private void PlayLocomotionFootstep()
+        {
+            if (!IsControlEnabled || IsSwimming || !IsGrounded || _speed < 0.25f || Time.time - _lastFootstepTime < 0.18f
+                || (StoryQuestManager.Instance != null && StoryQuestManager.Instance.IsMenuOpen)) return;
+            _lastFootstepTime = Time.time;
+            if (ProceduralForestAudio.Instance != null)
+                ProceduralForestAudio.Instance.PlayFootstep(_speed > walkSpeed + 0.5f, _isStandingOnRock);
         }
 
         private void TriggerOrSetJump(bool jumping)
@@ -600,40 +608,32 @@ namespace Dimari.Player
             return false;
         }
 
-        private void OnFootstep(AnimationEvent animationEvent)
+        public void ReceiveFootstep(AnimationEvent animationEvent)
         {
-            if (animationEvent.animatorClipInfo.weight > 0.5f && ProceduralForestAudio.Instance != null)
-            {
-                _footstepDistance = 0f;
-                ProceduralForestAudio.Instance.PlayFootstep(_speed > walkSpeed + 0.5f, _isStandingOnRock);
-            }
+            if (animationEvent.animatorClipInfo.weight <= 0.5f) return;
+            _lastAnimationFootstepTime = Time.time;
+            _footstepDistance = 0f;
+            PlayLocomotionFootstep();
         }
-
-        private void OnLand(AnimationEvent animationEvent)
+        private void OnFootstep(AnimationEvent animationEvent) { ReceiveFootstep(animationEvent); }
+        public void ReceiveLand(AnimationEvent animationEvent)
         {
-            if (animationEvent.animatorClipInfo.weight > 0.5f && ProceduralForestAudio.Instance != null)
-            {
-                ProceduralForestAudio.Instance.PlayJumpLand();
-            }
+            if (animationEvent.animatorClipInfo.weight <= 0.5f || !IsControlEnabled || IsSwimming
+                || Time.time - _lastLandTime < 0.2f
+                || (StoryQuestManager.Instance != null && StoryQuestManager.Instance.IsMenuOpen)) return;
+            _lastLandTime = Time.time;
+            if (ProceduralForestAudio.Instance != null) ProceduralForestAudio.Instance.PlayJumpLand();
         }
+        private void OnLand(AnimationEvent animationEvent) { ReceiveLand(animationEvent); }
     }
 
     public class ForestAnimationEventReceiver : MonoBehaviour
     {
+        private ForestPlayerController owner;
+        private void Awake() { owner = GetComponentInParent<ForestPlayerController>(); }
         private void OnFootstep(AnimationEvent animationEvent)
-        {
-            if (animationEvent.animatorClipInfo.weight > 0.5f && ProceduralForestAudio.Instance != null)
-            {
-                ProceduralForestAudio.Instance.PlayFootstep(false);
-            }
-        }
-
+        { if (owner != null) owner.ReceiveFootstep(animationEvent); }
         private void OnLand(AnimationEvent animationEvent)
-        {
-            if (animationEvent.animatorClipInfo.weight > 0.5f && ProceduralForestAudio.Instance != null)
-            {
-                ProceduralForestAudio.Instance.PlayJumpLand();
-            }
-        }
+        { if (owner != null) owner.ReceiveLand(animationEvent); }
     }
 }
