@@ -74,6 +74,8 @@ namespace Dimari.Atmosphere
             AutoLoadClipsFromAssetDatabase();
 #endif
 
+            RemoveSpeechFromEnvironmentLists();
+
             _windSource = gameObject.AddComponent<AudioSource>();
             _windSource.loop = true;
             _windSource.spatialBlend = 0f;
@@ -258,7 +260,7 @@ namespace Dimari.Atmosphere
                 string fileName = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
 
                 // Пропускаем папку голосовой озвучки при сборе звуков природы
-                if (lower.Contains("/voice/") || fileName.StartsWith("voice_"))
+                if (lower.Contains("/voice/") || IsSpeechClipName(fileName))
                     continue;
 
                 AudioClip clip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
@@ -277,7 +279,7 @@ namespace Dimari.Atmosphere
                     continue;
                 }
 
-                if (fileName.Contains("bird") || fileName.Contains("chirp") || fileName.Contains("sparrow") || fileName.Contains("crow"))
+                if (fileName.Contains("bird") || fileName.Contains("chirp") || fileName.Contains("sparrow") || (fileName.Contains("crow") && !fileName.Contains("crowd")))
                 {
                     birdChirpClips.Add(clip);
                     totalAssigned++;
@@ -341,6 +343,20 @@ namespace Dimari.Atmosphere
         }
 #endif
 
+        private static bool IsSpeechClipName(string name)
+        {
+            string lower = name.ToLowerInvariant();
+            return lower.StartsWith("voice_") || lower.StartsWith("crowd_");
+        }
+
+        private void RemoveSpeechFromEnvironmentLists()
+        {
+            // Also clean serialized lists in existing scenes/builds, not just editor auto-discovery.
+            foreach (List<AudioClip> clips in new[] { forestAmbienceLoops, birdChirpClips,
+                grassWalkClips, grassRunClips, rockWalkClips, jumpLandClips })
+                if (clips != null) clips.RemoveAll(clip => clip != null && IsSpeechClipName(clip.name));
+        }
+
         private void Update()
         {
             _birdTimer -= Time.deltaTime;
@@ -352,7 +368,7 @@ namespace Dimari.Atmosphere
                     if (birdChirpClips != null && birdChirpClips.Count > 0)
                     {
                         AudioClip clip = birdChirpClips[Random.Range(0, birdChirpClips.Count)];
-                        if (clip != null)
+                        if (clip != null && !IsSpeechClipName(clip.name))
                         {
                             _sfxSource.pitch = Random.Range(0.95f, 1.05f);
                             _sfxSource.PlayOneShot(clip, birdsVolume * Random.Range(0.85f, 1.15f));
