@@ -21,7 +21,7 @@ namespace Dimari.Editor
             GameObject root=new GameObject("Dimari_CityLife");Undo.RegisterCreatedObjectUndo(root,"Add city life");
             CityLifeGraph road=Graph(root.transform,false),walk=Graph(root.transform,true);
             GameObject human=AssetDatabase.LoadAssetAtPath<GameObject>("Assets/AdministrationWoman/Generated/AdministrationWoman.prefab");
-            var people=new List<GameObject>();if(human!=null)people.Add(human);
+            var people=new List<GameObject>(); // Obzhorka is reserved for the office and the shop counter.
             if(AssetDatabase.IsValidFolder("Assets/Dimari/NPCs"))
                 foreach(string guid in AssetDatabase.FindAssets("t:Prefab",new[]{"Assets/Dimari/NPCs"}))
                 {GameObject p=AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GUIDToAssetPath(guid));var a=p.GetComponentInChildren<Animator>();if(a!=null&&a.avatar!=null&&a.avatar.isHuman)people.Add(p);}
@@ -147,7 +147,7 @@ namespace Dimari.Editor
             foreach(AudioListener c in go.GetComponentsInChildren<AudioListener>(true))Object.DestroyImmediate(c);
             foreach(AudioSource c in go.GetComponentsInChildren<AudioSource>(true))Object.DestroyImmediate(c);
         }
-        static CityLifeAgent Human(GameObject prefab,Transform parent,Vector3 position,Quaternion rotation,bool seated)
+        public static CityLifeAgent Human(GameObject prefab,Transform parent,Vector3 position,Quaternion rotation,bool seated)
         {
             GameObject go=Object.Instantiate(prefab,parent);go.name=seated?"Pizza visitor":"Pedestrian";Strip(go);
             go.transform.SetPositionAndRotation(position,rotation);
