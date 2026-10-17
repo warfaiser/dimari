@@ -8,7 +8,7 @@ namespace Dimari.Editor
     public static class AdministrationWomanSeating
     {
         [MenuItem("Dimari/Администрация — посадить женщину на выбранное кресло")]
-        static void Seat()
+        public static void Seat()
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode) return;
             GameObject chair = Selection.activeGameObject;
