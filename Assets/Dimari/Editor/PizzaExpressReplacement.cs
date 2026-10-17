@@ -75,6 +75,23 @@ namespace Dimari.Editor
             EditorUtility.DisplayDialog("Замена выполнена","Старое здание скрыто. Локально изменено скрытых MeshCollider: "+modified+". Добавлена опора под проходом.\nПроверьте путь от дороги и дверь E в Play. Если осталась преграда — пришлите диагностику; видимые ограды и отдельные BoxCollider не удаляются автоматически. После проверки сохраните Ctrl+S. Ctrl+Z сразу после команды отменяет замену.","OK");
         }
 
+        public static int OpenDoorAccess(Transform pizza)
+        {
+            int modified=0;
+            Directory.CreateDirectory("Assets/Dimari/Generated/PizzaExpress");AssetDatabase.Refresh();
+            Bounds corridor=new Bounds(new Vector3(-4.1f,1.65f,-5.5f),new Vector3(2.4f,3,5));
+            Bounds unused=new Bounds(new Vector3(0,-10000,0),Vector3.one*0.01f);
+            foreach(GameObject go in pizza.gameObject.scene.GetRootGameObjects())
+                foreach(MeshCollider collider in go.GetComponentsInChildren<MeshCollider>())
+                {
+                    if(collider.transform.IsChildOf(pizza)||collider.sharedMesh==null)continue;
+                    Renderer visible=collider.GetComponent<Renderer>();
+                    if(collider.name!="city_part_collider"&&visible!=null&&visible.enabled)continue;
+                    if(Cut(collider,pizza.worldToLocalMatrix,unused,corridor))modified++;
+                }
+            return modified;
+        }
+
         static bool Cut(MeshCollider collider,Matrix4x4 frame,Bounds footprint,Bounds corridor)
         {
             var vertices=new List<Vector3>();var indices=new List<int>();int affected=0;

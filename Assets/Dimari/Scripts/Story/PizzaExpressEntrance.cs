@@ -18,9 +18,18 @@ namespace Dimari.Story
             bool near = Vector3.Distance(player.transform.position, transform.position) < 2.6f;
             if (near)
             {
-                story.SetInteractionPrompt("[E] " + (open ? "Закрыть" : "Открыть") + " дверь «Пицца Экспресс 24»");
+                story.SetInteractionPrompt(open ? "Проходите внутрь · [E] Закрыть дверь" : "[E] Войти в «pizza express 24» — открыть дверь");
                 prompted = true;
-                if (DimariInput.IsInteractPressed()) open = !open;
+                if (DimariInput.IsInteractPressed())
+                {
+                    bool inDoorway = false;
+                    if (door != null)
+                    {
+                        Vector3 local = door.parent.InverseTransformPoint(player.transform.position);
+                        inDoorway = local.x > -5.2f && local.x < -3f && Mathf.Abs(local.z + 5) < 0.75f;
+                    }
+                    if (!open || !inDoorway) open = !open;
+                }
             }
             else if (prompted) { story.SetInteractionPrompt(""); prompted = false; }
             if (door != null) door.localRotation = Quaternion.RotateTowards(door.localRotation, Quaternion.Euler(0, open ? -100 : 0, 0), Time.deltaTime * 150);
