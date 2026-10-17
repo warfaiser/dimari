@@ -18,6 +18,14 @@ namespace Dimari.City
         Vector3 last;
         float blockedFor,nextLog;
         string lastReport="";
+        string lastCollision="none";
+        float lastCollisionTime=-100;
+        void OnControllerColliderHit(ControllerColliderHit hit)
+        {
+            if(hit.collider==null||hit.transform.IsChildOf(transform)||Mathf.Abs(hit.normal.y)>0.7f)return;
+            lastCollision=Path(hit.transform)+" type="+hit.collider.GetType().Name+" point="+hit.point+" normal="+hit.normal;
+            lastCollisionTime=Time.unscaledTime;
+        }
         void Start(){player=GetComponent<ForestPlayerController>();last=transform.position;}
         static bool CopyPressed()
         {
@@ -63,6 +71,9 @@ namespace Dimari.City
                 int shown=0;foreach(var hit in overlaps)
                 {if(hit==cc)continue;b.AppendLine("  "+Path(hit.transform)+" type="+hit.GetType().Name+" selfChild="+hit.transform.IsChildOf(transform)+" bounds="+hit.bounds);if(++shown>=12)break;}
             }
+            b.AppendLine("Last side collision="+lastCollision+" age="+(Time.unscaledTime-lastCollisionTime).ToString("F1")+"s");
+            foreach(var capsule in GetComponentsInChildren<CharacterController>(true))
+                b.AppendLine("Player capsule="+Path(capsule.transform)+" enabled="+capsule.enabled);
             foreach(var script in GetComponents<MonoBehaviour>())if(script!=null)b.AppendLine("Player component: "+script.GetType().Name+" enabled="+script.enabled);
             int walkers=0,cars=0,nearWalk=0,nearCars=0;
             foreach(var agent in FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))

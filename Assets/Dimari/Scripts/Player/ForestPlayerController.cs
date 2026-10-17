@@ -158,6 +158,7 @@ namespace Dimari.Player
             FixSceneGroundCollidersAndSnap();
 
             _controller = GetComponent<CharacterController>();
+            DisableDuplicateChildControllers();
             // Официальные размеры капсулы из префаба PlayerArmature (Starter Assets)
             _controller.height = 1.8f;
             _controller.radius = 0.28f;
@@ -198,6 +199,23 @@ namespace Dimari.Player
 
             SnapTransformToRealGround(transform);
             SnapStoryObjectsToRealGround();
+        }
+
+        private void Start()
+        {
+            // Model setup may instantiate the visual armature after this component's Awake.
+            DisableDuplicateChildControllers();
+        }
+
+        private void DisableDuplicateChildControllers()
+        {
+            foreach (CharacterController duplicate in GetComponentsInChildren<CharacterController>(true))
+            {
+                if (duplicate == _controller || !duplicate.enabled) continue;
+                duplicate.enabled = false;
+                Debug.Log("[Dimari] Disabled duplicate player CharacterController: " + duplicate.name
+                    + ". Root locomotion capsule remains enabled.", duplicate);
+            }
         }
 
         public static void FixSceneGroundCollidersAndSnap()
