@@ -15,6 +15,7 @@ namespace Dimari.Story
 
         private void Update()
         {
+            if (Dimari.Cinematics.OfficeFishCutscene.Completed) return;
             if (player == null) player = FindAnyObjectByType<ForestPlayerController>();
             StoryQuestManager story = StoryQuestManager.Instance;
             if (player == null || story == null || busy || story.IsMenuOpen || !player.IsControlEnabled) return;
@@ -91,6 +92,9 @@ namespace Dimari.Story
             fade = 0;
             if (view != null) view.BeginGameplayTransitionFromCutscene();
             player.IsControlEnabled = true;
+            Dimari.Cinematics.OfficeFishCutscene.Begin(player, camera, story, oldScene.path,
+                transform.position - transform.forward * 2.8f + Vector3.up * 0.15f,
+                Quaternion.LookRotation(-transform.forward, Vector3.up));
             SceneManager.UnloadSceneAsync(oldScene);
         }
         private float fade;
@@ -108,6 +112,7 @@ namespace Dimari.Story
         }
         private void DrawObjectiveMarker()
         {
+            if (Dimari.Cinematics.OfficeFishCutscene.Completed) return;
             StoryQuestManager story = StoryQuestManager.Instance;
             Camera camera = Camera.main;
             if (busy || player == null || camera == null || story == null || story.IsMenuOpen
