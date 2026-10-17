@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using Dimari.Player;
 using Dimari.Story;
 
@@ -77,11 +78,29 @@ namespace Dimari.City
             };
             foreach(string line in cafe){var p=line.Split('|');bank.Add(new Talk(true,p[1],p[2],-1,p[0]));}
             var audio=new GameObject("Ambient speech source");audio.transform.SetParent(transform,false);
-            source=audio.AddComponent<AudioSource>();source.spatialBlend=1;source.rolloffMode=AudioRolloffMode.Linear;source.minDistance=2;source.maxDistance=14;source.volume=0.65f;
+            source=audio.AddComponent<AudioSource>();source.playOnAwake=false;source.Stop();source.spatialBlend=1;source.rolloffMode=AudioRolloffMode.Linear;source.minDistance=2;source.maxDistance=14;source.volume=0.65f;
         }
         void OnEnable(){StartCoroutine(Run());}
         bool Allowed()
-        {return player!=null&&player.IsControlEnabled&&StoryQuestManager.Instance!=null&&!StoryQuestManager.Instance.IsMenuOpen;}
+        {
+            var story=StoryQuestManager.Instance;
+            Scene scene=SceneManager.GetActiveScene();
+            if(scene.name!="Chapter2_Rogovo"||gameObject.scene!=scene||story==null||!story.HasGameStarted||story.IsMenuOpen
+                ||player==null||!player.IsControlEnabled)return false;
+            Camera camera=Camera.main;
+            if(camera==null)return false;
+            var view=camera.GetComponent<ForestCameraController>();
+            return view==null||(!view.IsMenuCameraActive&&!view.IsCutsceneControlled);
+        }
+        void Update()
+        {
+            // Stop immediately even while the coroutine is in a between-lines WaitForSeconds
+            // or Time.timeScale is zero. Hidden subtitles alone must not leave audible speech.
+            if(Allowed())return;
+            interrupted=true;subtitle="";
+            if(source!=null)source.Stop();
+            ClearActors();
+        }
         static int Table(CityLifeAgent guest,Transform pizza)
         {
             Vector3 point=guest.transform.position;var animator=guest.GetComponentInChildren<Animator>();
@@ -163,13 +182,13 @@ namespace Dimari.City
         }
         IEnumerator Say(CityLifeAgent actor,string line,int audio)
         {
-            if(actor==null){interrupted=true;yield break;}
+            if(interrupted||!Allowed()||actor==null||!CanHear(actor)){interrupted=true;yield break;}
             AudioClip clip=audio<0?null:Resources.Load<AudioClip>("Crowd_"+audio);
             source.transform.position=actor.transform.position+Vector3.up*1.4f;source.clip=clip;if(clip!=null)source.Play();
             float duration=clip!=null?clip.length:Mathf.Clamp(line.Length/16f,3,8);actor.speakingUntil=Time.time+duration;
             for(float t=0;t<duration;t+=Time.deltaTime)
             {
-                if(!Allowed()||actor==null||!CanHear(actor))
+                if(interrupted||!Allowed()||actor==null||!CanHear(actor))
                 {interrupted=true;source.Stop();subtitle="";yield break;}
                 subtitle=(actor.seated?"Посетитель: ":"Прохожий: ")+line;yield return null;
             }
