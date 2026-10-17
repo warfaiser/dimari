@@ -11,6 +11,8 @@ namespace Dimari.Cinematics
     public class OfficeFishCutscene : MonoBehaviour
     {
         public static bool Completed;
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetSession() { Completed = false; }
         ForestPlayerController player;
         ForestCameraController view;
         Camera cam;
@@ -269,7 +271,8 @@ namespace Dimari.Cinematics
                 Debug.LogError("[Dimari] Город не добавлен в Scene List: " + cityPath);
                 Unlock(); yield break;
             }
-            yield return SceneManager.LoadSceneAsync(cityPath, LoadSceneMode.Additive);
+            bool retained = RetainedCityState.HasCity(cityPath);
+            if (!retained) yield return SceneManager.LoadSceneAsync(cityPath, LoadSceneMode.Additive);
             Scene city = SceneManager.GetSceneByPath(cityPath);
             Scene office = gameObject.scene;
             foreach (GameObject root in city.GetRootGameObjects())
@@ -284,6 +287,7 @@ namespace Dimari.Cinematics
             player.transform.SetPositionAndRotation(returnPosition, returnRotation); player.ResetWaterMotion();
             if (controller != null) controller.enabled = true;
             SceneManager.SetActiveScene(city);
+            if (retained) RetainedCityState.Restore();
             story.questSteps.Clear();
             story.questSteps.Add(new StoryQuestManager.QuestStep { id = "city_pizza_express", title = "Найти «Пицца Экспресс 24» и разыскать Димарика." });
             Completed = true;

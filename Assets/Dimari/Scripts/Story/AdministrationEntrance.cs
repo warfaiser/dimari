@@ -54,6 +54,7 @@ namespace Dimari.Story
             }
             fade = 1f;
             Scene oldScene = gameObject.scene;
+            RetainedCityState.CaptureLighting(oldScene);
             yield return SceneManager.LoadSceneAsync(destinationScene, LoadSceneMode.Additive);
             Scene office = SceneManager.GetSceneByPath(destinationScene);
             Transform spawn = null;
@@ -95,7 +96,7 @@ namespace Dimari.Story
             Dimari.Cinematics.OfficeFishCutscene.Begin(player, camera, story, oldScene.path,
                 transform.position - transform.forward * 2.8f + Vector3.up * 0.15f,
                 Quaternion.LookRotation(-transform.forward, Vector3.up));
-            SceneManager.UnloadSceneAsync(oldScene);
+            RetainedCityState.Suspend(oldScene);
         }
         private float fade;
         private void OnGUI()
