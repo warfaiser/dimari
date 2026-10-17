@@ -13,6 +13,14 @@ namespace Dimari.Editor
         static Transform root;
         static Material white, red, plaster, metal, wood, upholstery, floor, black, glass, green;
 
+        static Vector3? forcedSite;
+        static Quaternion forcedRotation;
+        public static void BuildAt(Vector3 position, Quaternion rotation)
+        {
+            forcedSite=position; forcedRotation=rotation;
+            try { Build(); } finally { forcedSite=null; }
+        }
+
         [MenuItem("Dimari/Пицца Экспресс 24 — построить в городе")]
         public static void Build()
         {
@@ -27,7 +35,9 @@ namespace Dimari.Editor
             }
             if (entrance == null) { EditorUtility.DisplayDialog("Пиццерия", "Не найден вход в администрацию.", "OK"); return; }
             Physics.SyncTransforms();
-            if (!FindSite(entrance.transform.position, out Vector3 site, out Quaternion rotation))
+            Vector3 site=forcedSite ?? Vector3.zero;
+            Quaternion rotation=forcedRotation;
+            if (!forcedSite.HasValue && !FindSite(entrance.transform.position, out site, out rotation))
             { EditorUtility.DisplayDialog("Пиццерия", "В радиусе 250–300 м не найдена достаточно ровная свободная площадка 15×13 м с коллайдером земли. Ничего не изменено. Пришлите вид карты сверху — выберем площадку без удаления города.", "OK"); return; }
             if (Shader.Find("Universal Render Pipeline/Lit") == null) return;
             Directory.CreateDirectory(Generated); AssetDatabase.Refresh();
