@@ -95,7 +95,7 @@ namespace Dimari.Editor
                         string label=name+" "+filter.name.ToLowerInvariant()+" "+AssetDatabase.GetAssetPath(filter.sharedMesh).ToLowerInvariant();
                         Texture texture=materials[sub].HasProperty("_BaseMap")?materials[sub].GetTexture("_BaseMap"):(materials[sub].HasProperty("_MainTex")?materials[sub].GetTexture("_MainTex"):null);
                         if(texture!=null)label+=" "+texture.name.ToLowerInvariant();
-                        bool sidewalk=label.Contains("sidewalk")||label.Contains("side_walk")||label.Contains("pavement")||label.Contains("walkway")||label.Contains("paving")||label.Contains("footpath")||label.Contains("trotuar")||label.Contains("тротуар");
+                        bool sidewalk=label.Contains("sideway")||label.Contains("side_way")||label.Contains("sidewalk")||label.Contains("side_walk")||label.Contains("pavement")||label.Contains("walkway")||label.Contains("paving")||label.Contains("footpath")||label.Contains("trotuar")||label.Contains("тротуар");
                         bool asphalt=!sidewalk&&(label.Contains("asphalt")||label.Contains("asfalt")||label.Contains("road")||label.Contains("street"));
                         if(pedestrians?!sidewalk:!asphalt)continue;matched++;
                         var desc=data[0].GetSubMesh(sub);if(desc.topology!=MeshTopology.Triangles)continue;

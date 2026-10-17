@@ -14,7 +14,7 @@ namespace Dimari.Editor
     [InitializeOnLoad]
     public static class CityStreetLifeRepair
     {
-        const string Stamp="Street population repair v2";
+        const string Stamp="Street population repair v3";
         static CityStreetLifeRepair()
         {EditorApplication.delayCall+=Auto;EditorSceneManager.sceneOpened+=(scene,mode)=>EditorApplication.delayCall+=Auto;}
         static void Auto()
@@ -119,7 +119,17 @@ namespace Dimari.Editor
                 if(!conversationFound){var go=new GameObject("City conversations");go.transform.SetParent(city.transform,false);Undo.RegisterCreatedObjectUndo(go,"Street conversations");Undo.AddComponent<CityAmbientConversations>(go);}
                 EditorSceneManager.MarkSceneDirty(city.scene);AssetDatabase.SaveAssets();
                 string message="Настроено прохожих: "+pedestrianCount+" / 24; машин: "+carCount+" / "+trafficLimit+". Гости пиццерии и продавцы не заменены.\n"+"Пригодных узлов: дороги "+roadNodes.Count+", тротуары "+walkNodes.Count+".\n"+roadsReport+"\n"+walksReport+"\nЕсли счётчик нулевой: нужны распознаваемые поверхности/связные маршруты, импортированные Humanoid-префабы в Assets/Dimari/NPCs и исходная CityDriveableCar. Ничего не пускается наугад через дома. После Play сохраните сцену Ctrl+S вне Play.";
-                Debug.Log("[Dimari] "+message,city);if(report)EditorUtility.DisplayDialog("Городская жизнь",message,"OK");
+                Debug.Log("[Dimari] "+message,city);
+                if(report)
+                {
+                    string walkSummary=walksReport.Split(new[]{" Материалы:"},System.StringSplitOptions.None)[0];
+                    string roadSummary=roadsReport.Split(new[]{" Материалы:"},System.StringSplitOptions.None)[0];
+                    EditorUtility.DisplayDialog("Городская жизнь",
+                        "Прохожие: "+pedestrianCount+" / 24; машины: "+carCount+" / "+trafficLimit+".\n"+
+                        "Пригодные узлы: тротуары "+walkNodes.Count+", дороги "+roadNodes.Count+".\n"+
+                        "Готовых моделей людей: "+people.Count+".\n"+walkSummary+"\n"+roadSummary+
+                        "\nПолный отчёт с материалами — в Console. Сохраните сцену Ctrl+S вне Play.","OK");
+                }
             }
             catch {Undo.RevertAllDownToGroup(undo);throw;}
             finally
