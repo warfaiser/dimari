@@ -16,11 +16,11 @@ namespace Dimari.Cinematics
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetSession(){IsRunning=false;}
         readonly string[] lines={
-            "Тааааааак, , какого чёртааааа ты тут стоишь?",
-            "Я тут тоже подрабатываю в свободное время. Я тогда, когда ела рыбу, забыла тебе рассказать, что я тут тоже работаю.",
-            "Ты, походу, своей тухлятской едой все мозги просрочила. Ладно, чёрт с тобой. ГДЕ, ЧЁРТ ВОЗЬМИ, ДИМАРИК?",
-            "Он, когда закончил работать в 17:00, уехал в спортивный зал «Донспорт». Езжай туда, и я уверен, тебе точно там расскажут.",
-            "Надеюсь, твою физиономию больше не увижу, похлёбка кефира просроченного."
+            "Так, а ты что здесь делаешь?",
+            "Я здесь подрабатываю в свободное время. Когда мы разговаривали в администрации, я ела рыбу и забыла тебе об этом сказать.",
+            "Похоже, от твоей просроченной еды у тебя уже всё в голове перепуталось. Ладно, давай к делу. Где Димарик?",
+            "Он закончил работу в пять вечера и уехал в спортивный зал «Донспорт». Езжай туда — уверена, там тебе подскажут, где его найти.",
+            "Надеюсь, больше с тобой не встретимся. И лучше выброси эту просроченную еду."
         };
         ForestPlayerController player;
         StoryQuestManager story;
@@ -108,7 +108,7 @@ namespace Dimari.Cinematics
             for(int i=0;i<lines.Length;i++)
             {
                 sellerSpeaking=i%2==1;subtitle=(sellerSpeaking?"Обжорка Просрочки":"Главный герой")+":\n"+lines[i];
-                AudioClip clip=Resources.Load<AudioClip>("Voice_PizzaClean_"+i);speech.clip=clip;if(clip!=null)speech.Play();
+                AudioClip clip=Resources.Load<AudioClip>("Voice_PizzaClear_"+i);speech.clip=clip;if(clip!=null)speech.Play();
                 SetShot(sellerSpeaking);
                 float duration=clip!=null?clip.length+0.35f:Mathf.Clamp(lines[i].Length/12f,4.5f,16f);
                 for(float t=0;t<duration;)
