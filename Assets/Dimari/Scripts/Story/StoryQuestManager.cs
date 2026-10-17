@@ -1441,6 +1441,7 @@ namespace Dimari.Story
             _waitingForCaptainInteraction = false;
             _hasPickedUpTablet = true;
             _isMenuOpen = false;
+            SyncStoryVoiceMenuState();
             _isSettingsOpen = false;
             _chapterSelectionOpen = false;
             _isTabletViewerOpen = false;
@@ -1710,6 +1711,7 @@ namespace Dimari.Story
 
         private void LateUpdate()
         {
+            SyncStoryVoiceMenuState();
             ApplyCaptainHelmPose();
             if (!_isMenuOpen)
             {
@@ -2631,10 +2633,13 @@ namespace Dimari.Story
                 voice = _mainCam.gameObject.AddComponent<AudioSource>();
                 voice.spatialBlend = 0f;
                 voice.clip = clip;
-                voice.Play();
+                PlayStoryVoice(voice);
             }
-            for (float t = 0f; t < duration; t += Time.deltaTime)
+            float farewellElapsed = 0f;
+            while (farewellElapsed < duration)
             {
+                if (_isMenuOpen) { yield return null; continue; }
+                farewellElapsed += Time.deltaTime;
                 Vector3 look = _npcTransform.position + Vector3.up * 1.45f;
                 Vector3 camera = _npcTransform.position + _npcTransform.forward * 2.8f
                     + _npcTransform.right * 0.65f + Vector3.up * 1.55f;
@@ -2822,6 +2827,39 @@ namespace Dimari.Story
             _sailingStart = _shipBasePos;
         }
 
+        // Only story speech owned by this manager; forest/menu ambience stays audible.
+        private readonly List<AudioSource> _storyVoices = new List<AudioSource>();
+        private readonly HashSet<AudioSource> _menuPausedVoices = new HashSet<AudioSource>();
+
+        private void PlayStoryVoice(AudioSource voice)
+        {
+            voice.playOnAwake = false;
+            _storyVoices.Add(voice);
+            voice.Play();
+            SyncStoryVoiceMenuState();
+        }
+
+        private void SyncStoryVoiceMenuState()
+        {
+            bool silence = _isMenuOpen || !_hasGameStarted;
+            for (int i = _storyVoices.Count - 1; i >= 0; i--)
+            {
+                AudioSource voice = _storyVoices[i];
+                if (voice == null)
+                {
+                    _menuPausedVoices.Remove(voice);
+                    _storyVoices.RemoveAt(i);
+                    continue;
+                }
+                if (silence && voice.isPlaying)
+                {
+                    voice.Pause();
+                    _menuPausedVoices.Add(voice);
+                }
+                else if (!silence && _menuPausedVoices.Remove(voice)) voice.UnPause();
+            }
+        }
+
         private IEnumerator CaptainDialogueLine(string subtitle, AudioClip clip, float fallbackDuration,
             bool captainSpeaking, Vector3 heroLocalPosition)
         {
@@ -2833,7 +2871,7 @@ namespace Dimari.Story
                 voice = _mainCam.gameObject.AddComponent<AudioSource>();
                 voice.spatialBlend = 0f;
                 voice.clip = clip;
-                voice.Play();
+                PlayStoryVoice(voice);
             }
             float elapsed = 0f;
             while (elapsed < duration)
@@ -2877,6 +2915,7 @@ namespace Dimari.Story
         public void OpenMainMenuOnStartup()
         {
             _isMenuOpen = true;
+            SyncStoryVoiceMenuState();
             _isSettingsOpen = false;
             _hasGameStarted = false;
             _showHUD = false;
@@ -2916,6 +2955,7 @@ namespace Dimari.Story
         public void OpenPauseMenu()
         {
             _isMenuOpen = true;
+            SyncStoryVoiceMenuState();
             _isSettingsOpen = false;
             Time.timeScale = 1.0f;
 
@@ -2937,6 +2977,7 @@ namespace Dimari.Story
         public void ResumeFromPause()
         {
             _isMenuOpen = false;
+            SyncStoryVoiceMenuState();
             _isSettingsOpen = false;
             Time.timeScale = 1.0f;
 
@@ -2976,6 +3017,7 @@ namespace Dimari.Story
                 if (controller != null) controller.enabled = true;
             }
             _isMenuOpen = false;
+            SyncStoryVoiceMenuState();
             _isSettingsOpen = false;
             _isTabletViewerOpen = false;
             _hasGameStarted = true;
@@ -3048,6 +3090,7 @@ namespace Dimari.Story
             }
 
             _isMenuOpen = false;
+            SyncStoryVoiceMenuState();
             _isSettingsOpen = false;
             _hasGameStarted = true;
             Time.timeScale = 1.0f;
