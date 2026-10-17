@@ -106,12 +106,16 @@ namespace Dimari.Cinematics
                 if (clip != null) speech.Play();
                 float duration = clip != null ? clip.length : Mathf.Max(3, lines[i].Length / 12f);
                 Vector3 forward = woman.forward;
-                Vector3 destination = head.position + forward * (speaking ? 1.45f : 2.1f) + woman.right * (speaking ? 0.65f : -0.75f) + Vector3.up * 0.08f;
+                // Close, elevated three-quarter shots stay on the actor's side of the monitor.
+                // Do not cross behind the screen when the speaker changes.
+                Vector3 destination = head.position + forward * (speaking ? 0.72f : 0.85f)
+                    + woman.right * (speaking ? 0.72f : 0.82f) + Vector3.up * 0.32f;
+                cam.fieldOfView = 48f;
                 Vector3 start = cam.transform.position;
                 for (float t = 0; t < duration + 0.35f; t += Time.deltaTime)
                 {
                     cam.transform.position = Vector3.Lerp(start, destination, Mathf.SmoothStep(0, 1, Mathf.Clamp01(t / 0.7f)));
-                    cam.transform.rotation = Quaternion.LookRotation(head.position + Vector3.down * 0.16f - cam.transform.position);
+                    cam.transform.rotation = Quaternion.LookRotation(head.position + Vector3.up * 0.07f - cam.transform.position);
                     envelope = 0;
                     if (clip != null && speech.isPlaying)
                     {
@@ -241,16 +245,17 @@ namespace Dimari.Cinematics
             Bounds b = original.bounds;
             Texture photo = Resources.Load<Texture2D>("OfficeWallPhoto");
             if (photo == null) return;
-            // World-space placement ignores the imported frame's rotated/scaled local axes.
-            Vector3 normal = Vector3.ProjectOnPlane(head.position - b.center, Vector3.up).normalized;
-            if (normal.sqrMagnitude < 0.1f) normal = woman.forward;
+            // The thinnest horizontal axis of the old frame is the wall normal.
+            // A vector toward the actor is NOT the wall normal and makes the image turn edge-on.
+            Vector3 normal = b.size.x < b.size.z ? Vector3.right : Vector3.forward;
+            if (Vector3.Dot(normal, head.position - b.center) < 0) normal = -normal;
+            foreach (Renderer old in frame.GetComponentsInChildren<Renderer>()) old.enabled = false;
             var quad = GameObject.CreatePrimitive(PrimitiveType.Quad); quad.name = "Office wall photograph";
             Destroy(quad.GetComponent<Collider>()); quad.transform.SetParent(transform);
-            quad.transform.position = b.center + normal * 0.025f;
+            quad.transform.position = b.center + normal * (Mathf.Min(b.size.x, b.size.z) * 0.5f + 0.035f);
             quad.transform.rotation = Quaternion.LookRotation(-normal, Vector3.up);
-            float width = Mathf.Max(b.size.x, b.size.z) * 0.88f;
-            float height = Mathf.Min(b.size.y * 0.88f, width * photo.height / photo.width);
-            width = height * photo.width / photo.height;
+            float width = 1.15f;
+            float height = width * photo.height / photo.width;
             quad.transform.localScale = new Vector3(width, height, 1);
             var material = Mat(Color.white, true); material.mainTexture = photo; quad.GetComponent<Renderer>().material = material;
         }
