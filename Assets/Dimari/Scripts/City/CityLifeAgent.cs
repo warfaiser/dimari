@@ -10,13 +10,14 @@ namespace Dimari.City
         public int node, previous=-1;
         public float speed=1.1f;
         public bool vehicle, seated;
-        public float talkingUntil;
+        public float talkingUntil, speakingUntil;
+        public Transform conversationPartner;
         Rigidbody body;
         Animator animator;
         Transform[] bones;
         Quaternion[] rest;
         Vector3 lastPosition;
-        float phase;
+        float phase, lookYaw;
         void Start()
         {
             body=GetComponent<Rigidbody>();animator=GetComponentInChildren<Animator>();
@@ -68,8 +69,12 @@ namespace Dimari.City
             for(int i=0;i<bones.Length;i++)if(bones[i]!=null)
             {
                 float angle=i==0?swing:i==1?-swing:i==2?Mathf.Max(0,-swing):i==3?Mathf.Max(0,swing):i==4?-swing*0.5f:i==5?swing*0.5f:Mathf.Sin(Time.time+phase)*2;
-                if(Time.time<talkingUntil&&(i==4||i==5))angle+=Mathf.Sin(Time.time*2.7f+phase)*7;
-                bones[i].localRotation=rest[i]*Quaternion.Euler(angle,0,0);
+                if(Time.time<speakingUntil&&(i==4||i==5))angle+=Mathf.Sin(Time.time*2.7f+phase)*7;
+                float look=0;
+                if(i==6&&Time.time<talkingUntil&&conversationPartner!=null)
+                {Vector3 toward=transform.InverseTransformDirection(conversationPartner.position-transform.position);look=Mathf.Clamp(Mathf.Atan2(toward.x,toward.z)*Mathf.Rad2Deg,-28,28);}
+                if(i==6){lookYaw=Mathf.Lerp(lookYaw,look,1-Mathf.Exp(-5*Time.deltaTime));look=lookYaw;}
+                bones[i].localRotation=rest[i]*Quaternion.Euler(angle,look,0);
             }
         }
     }

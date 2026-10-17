@@ -8,81 +8,151 @@ namespace Dimari.City
 {
     public class CityAmbientConversations : MonoBehaviour
     {
-        [System.Serializable] class Talk { public bool cafe; public string a,b; public int audio=-1; public Talk(bool c,string x,string y,int clip=-1){cafe=c;a=x;b=y;audio=clip;} }
-        readonly List<Talk> deck=new List<Talk>();
-        string subtitle="";
+        class Talk
+        {
+            public bool cafe; public string a,b,topic; public int audio;
+            public Talk(bool c,string x,string y,int clip=-1,string subject="Еда") { cafe=c;a=x;b=y;audio=clip;topic=subject; }
+        }
+        readonly List<Talk> bank=new List<Talk>();
+        readonly HashSet<Talk> used=new HashSet<Talk>();
+        string subtitle="",previousTopic="";
         ForestPlayerController player;
         AudioSource source;
+        CityLifeAgent activeA,activeB,lastA,lastB;
+        bool interrupted;
         void Awake()
         {
-            deck.Add(new Talk(false,"Опять весь центр перекопали. Вчера до остановки десять минут шёл в обход.","Зато теперь у пиццерии можно спокойно пройти. Пойдём через площадь.",0));
-            deck.Add(new Talk(false,"В администрации сегодня видел какого-то парня. Всё спрашивал про пропавшего коллегу.","Надеюсь, найдётся. Тут все друг друга знают, поспрашивает и разберётся.",2));
-            deck.Add(new Talk(true,"Я возьму пепперони. Только в этот раз давай без споров, кому достался последний кусок.","Тогда сразу две закажем. И салфеток побольше, у тебя опять весь стол будет в соусе.",4));
-            deck.Add(new Talk(true,"Смотри, тут даже пицца с трюфелем есть. А я всё время одну маргариту беру.","Ну попробуй что-нибудь новое. Только сначала цену посмотри, любитель экспериментов.",6));
-            string[] street={"Автобус уже ушёл?|Ничего, следующий через десять минут.","Ночью дождь обещали.|Я зонт ещё утром в машине оставила.","У тебя телефон ловит?|Только возле перекрёстка, здесь опять пропадает сеть.","Ключи не видел?|Посмотри в кармане куртки, ты всегда туда кладёшь.","В парке фонари починили.|Отлично, можно вечером прогуляться.","Магазин ещё открыт?|До одиннадцати, успеем.","Сосед опять ремонт затеял.|Хоть бы предупредил заранее.","Смотри, новый фасад сделали.|Да, раньше на этом месте совсем другое здание было.","На работе сегодня тихо?|Тихо было, пока начальник не приехал.","Пойдём пешком, тут недалеко.|Только через переход, не перебегай дорогу."};
-            string[] cafe={"Тебе какой кусок оставить?|Тот, где больше сыра.","Острая нормально?|Лучше соус отдельно попросим.","С собой будем брать?|Одну коробку домой, остальное здесь.","Ты уже заказал?|Нет, ждал, пока ты выберешь.","Чай остыл.|Ты меню уже полчаса читаешь.","Возьмём сорок два сантиметра?|На двоих многовато, позовём ещё кого-нибудь.","Гавайскую любишь?|Сегодня давай без ананасов.","Пахнет свежим тестом.|Кажется, только что новую партию в печь поставили.","Мне без лука, пожалуйста.|Не забудь сказать на кассе.","Сфотографируй меню.|Сначала поедим, потом будем всем показывать."};
-            foreach(string s in street){var p=s.Split('|');deck.Add(new Talk(false,p[0],p[1]));}
-            foreach(string s in cafe){var p=s.Split('|');deck.Add(new Talk(true,p[0],p[1]));}
-            source=gameObject.AddComponent<AudioSource>();source.spatialBlend=1;source.rolloffMode=AudioRolloffMode.Linear;source.minDistance=2;source.maxDistance=14;source.volume=0.65f;
+            bank.Add(new Talk(false,"Опять весь центр перекопали. Вчера до остановки десять минут шёл в обход.","Зато теперь у пиццерии можно спокойно пройти. Пойдём через площадь.",0));
+            bank.Add(new Talk(false,"В администрации сегодня видел какого-то парня. Всё спрашивал про пропавшего коллегу.","Надеюсь, найдётся. Тут все друг друга знают, поспрашивает и разберётся.",2));
+            bank.Add(new Talk(true,"Я возьму пепперони. Только в этот раз давай без споров, кому достался последний кусок.","Тогда сразу две закажем. И салфеток побольше, у тебя опять весь стол будет в соусе.",4));
+            bank.Add(new Talk(true,"Смотри, тут даже пицца с трюфелем есть. А я всё время одну маргариту беру.","Ну попробуй что-нибудь новое. Только сначала цену посмотри, любитель экспериментов.",6));
+            string[] street={"Автобус уже ушёл?|Ничего, следующий через десять минут.","Ночью дождь обещали.|Я зонт ещё утром в машине оставила.","У тебя телефон ловит?|Только возле перекрёстка, здесь опять пропадает сеть.","В парке фонари починили.|Отлично, можно вечером прогуляться.","Магазин ещё открыт?|До одиннадцати, успеем.","На работе сегодня тихо?|Тихо было, пока начальник не приехал."};
+            foreach(string line in street){var p=line.Split('|');bank.Add(new Talk(false,p[0],p[1]));}
+            string[] cafe={
+                "Еда|Тебе какой кусок оставить?|Тот, где больше сыра.",
+                "Еда|Острая нормально?|Лучше соус отдельно попросим.",
+                "Еда|С собой будем брать?|Одну коробку домой, остальное здесь.",
+                "Еда|Ты уже заказал?|Нет, ждал, пока ты выберешь.",
+                "Еда|Чай остыл.|Ты меню уже полчаса читаешь.",
+                "Еда|Возьмём большую на всех?|Давай. Только последний кусок делим честно.",
+                "Еда|Мне без лука, пожалуйста.|Не забудь сказать на кассе.",
+                "Еда|Пахнет свежим тестом.|Кажется, только что новую партию в печь поставили.",
+                "Работа|Сегодня смена наконец без аврала.|Тогда телефон убери. У тебя обед, а не планёрка.",
+                "Работа|Начальник опять совещание перенёс.|Надеюсь, не на наш ужин.",
+                "Кино|Посмотрим вечером детектив?|Только без спойлеров. Ты в прошлый раз всё рассказал.",
+                "Кино|Новый фильм уже видел?|Нет. Давай выберем сеанс после ужина.",
+                "Погода|С утра холодно, а сейчас куртку некуда деть.|Положи рядом. Главное, опять здесь не забудь.",
+                "Погода|До дождя домой успеем?|Если ты не будешь фотографировать каждый кусок.",
+                "Поездки|На выходных хочу выбраться за город.|Давай поездом. Хоть раз без поисков парковки.",
+                "Поездки|У моря сейчас, наверное, хорошо.|Сначала отпуск согласуй, мечтатель.",
+                "Дом|Я наконец собрал тот шкаф.|И сколько деталей осталось лишних?",
+                "Дом|Сосед опять сверлит по вечерам.|Пригласи его на пиццу. Хоть час тишины будет.",
+                "Спорт|Матч вчера смотрел?|Смотрел. Последние пять минут чуть чай не пролил.",
+                "Спорт|С понедельника начинаю бегать.|Только не за автобусом, как обычно.",
+                "Музыка|Что у тебя весь день в наушниках?|Старый альбом. Никак не надоест.",
+                "Музыка|На концерт в субботу пойдём?|Пойдём, если ещё остались билеты.",
+                "Город|На площади новые скамейки поставили.|После еды прогуляемся и проверим.",
+                "Город|Здесь раньше совсем другой магазин был.|Да, а теперь хоть вечером есть где посидеть.",
+                "Покупки|Опять забыл список продуктов.|Главное, не вернись с одним печеньем.",
+                "Покупки|Хочу новый чайник купить.|Старый ведь работает. Или цвет пиццерии понравился?",
+                "Питомцы|Кот утром спрятал мой носок.|Он просто не хотел отпускать тебя на работу.",
+                "Питомцы|Собака сегодня весь парк обошла.|Значит, вечером выгуливать уже она тебя будет.",
+                "Друзья|Давно всей компанией не собирались.|Напишем ребятам. Тут большой стол как раз пригодится.",
+                "Друзья|Помнишь нашу поездку с палатками?|Особенно то, как мы забыли сами палатки.",
+                "Техника|Телефон опять сел к обеду.|Меньше снимай пиццу, больше ешь.",
+                "Техника|Навигатор повёл меня через двор.|В следующий раз спроси дорогу у человека.",
+                "Планы|Что будешь делать вечером?|Ничего срочного. И это лучший план за неделю.",
+                "Планы|Завтра пораньше встретимся?|Давай. Только поставь не один будильник.",
+                "Книги|Дочитал ту книгу, которую советовал?|Пока нет. Не рассказывай, чем закончится.",
+                "Книги|В библиотеке выставку открыли.|Зайдём после обеда, она совсем рядом."
+            };
+            foreach(string line in cafe){var p=line.Split('|');bank.Add(new Talk(true,p[1],p[2],-1,p[0]));}
+            var audio=new GameObject("Ambient speech source");audio.transform.SetParent(transform,false);
+            source=audio.AddComponent<AudioSource>();source.spatialBlend=1;source.rolloffMode=AudioRolloffMode.Linear;source.minDistance=2;source.maxDistance=14;source.volume=0.65f;
         }
         void OnEnable(){StartCoroutine(Run());}
+        bool Allowed()
+        {return player!=null&&player.IsControlEnabled&&StoryQuestManager.Instance!=null&&!StoryQuestManager.Instance.IsMenuOpen;}
+        static int Table(CityLifeAgent guest,Transform pizza)
+        {
+            Vector3 point=guest.transform.position;var animator=guest.GetComponentInChildren<Animator>();
+            if(animator!=null&&animator.isHuman){var hips=animator.GetBoneTransform(HumanBodyBones.Hips);if(hips!=null)point=hips.position;}
+            Vector3 p=pizza.InverseTransformPoint(point);
+            if(Mathf.Abs(p.x)>6||Mathf.Abs(p.z)>5)return -1;
+            return p.x<0?0:(p.z< -1.025f?1:2);
+        }
+        bool ChoosePair(out CityLifeAgent a,out CityLifeAgent b)
+        {
+            a=null;b=null;var agents=FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None);
+            var building=GameObject.Find("Dimari_PizzaExpress24");Transform pizza=building!=null?building.transform:null;
+            Vector3 playerLocal=pizza!=null?pizza.InverseTransformPoint(player.transform.position):Vector3.one*100;
+            bool indoors=Mathf.Abs(playerLocal.x)<6&&Mathf.Abs(playerLocal.z)<5;
+            int candidates=0;
+            for(int i=0;i<agents.Length;i++)
+            {
+                var first=agents[i];if(first.name=="Pizza seller Obzhorka"||(indoors&&!first.seated)||first.vehicle||first.gameObject.scene!=gameObject.scene||Time.time<first.talkingUntil||Vector3.Distance(first.transform.position,player.transform.position)>11)continue;
+                for(int j=i+1;j<agents.Length;j++)
+                {
+                    var second=agents[j];if(second.name=="Pizza seller Obzhorka"||second.vehicle||second.gameObject.scene!=gameObject.scene||Time.time<second.talkingUntil||first.seated!=second.seated||Vector3.Distance(second.transform.position,player.transform.position)>11||Vector3.Distance(first.transform.position,second.transform.position)>3.2f)continue;
+                    if(first.seated&&(pizza==null||Table(first,pizza)<0||Table(first,pizza)!=Table(second,pizza)))continue;
+                    if((first==lastA&&second==lastB)||(first==lastB&&second==lastA))continue;
+                    if(Random.Range(0,++candidates)==0){a=first;b=second;}
+                }
+            }
+            // A single remaining pair is still allowed to talk in later cycles.
+            if(a==null&&lastA!=null&&lastB!=null)
+            {lastA=null;lastB=null;return ChoosePair(out a,out b);}
+            return a!=null;
+        }
+        Talk ChooseTalk(bool cafe)
+        {
+            var choices=new List<Talk>();
+            foreach(var talk in bank)if(talk.cafe==cafe&&!used.Contains(talk)&&talk.topic!=previousTopic)choices.Add(talk);
+            if(choices.Count==0)foreach(var talk in bank)if(talk.cafe==cafe&&!used.Contains(talk))choices.Add(talk);
+            if(choices.Count==0){used.RemoveWhere(t=>t.cafe==cafe);foreach(var talk in bank)if(talk.cafe==cafe)choices.Add(talk);}
+            var result=choices[Random.Range(0,choices.Count)];used.Add(result);previousTopic=result.topic;return result;
+        }
         IEnumerator Run()
         {
-            yield return new WaitForSeconds(10);
+            yield return new WaitForSeconds(3);
             while(true)
             {
-                player=FindAnyObjectByType<ForestPlayerController>();
-                var story=StoryQuestManager.Instance;
-                if(player==null||!player.IsControlEnabled||story==null||story.IsMenuOpen){yield return new WaitForSeconds(2);continue;}
-                var agents=FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None);
-                CityLifeAgent a=null,b=null;
-                foreach(var first in agents)
-                {
-                    if(first.vehicle||Vector3.Distance(first.transform.position,player.transform.position)>11)continue;
-                    foreach(var second in agents)
-                    {
-                        if(first==second||second.vehicle||first.seated!=second.seated||Vector3.Distance(first.transform.position,second.transform.position)>5)continue;
-                        a=first;b=second;break;
-                    }
-                    if(a!=null)break;
-                }
-                if(a!=null)
-                {
-                    var choices=new List<int>();
-                    for(int i=0;i<deck.Count;i++)if(deck[i].cafe==a.seated&&deck[i].audio>=0)choices.Add(i);
-                    if(choices.Count==0)for(int i=0;i<deck.Count;i++)if(deck[i].cafe==a.seated)choices.Add(i);
-                    if(choices.Count>0)
-                    {
-                        int chosen=choices[Random.Range(0,choices.Count)];Talk talk=deck[chosen];deck.RemoveAt(chosen);
-                        a.talkingUntil=b.talkingUntil=Time.time+35;
-                        yield return Say(a,talk.a,talk.audio);
-                        yield return Say(b,talk.b,talk.audio<0?-1:talk.audio+1);
-                        a.talkingUntil=b.talkingUntil=Time.time;subtitle="";
-                    }
-                }
-                yield return new WaitForSeconds(Random.Range(25,45));
+                if(player==null)player=FindAnyObjectByType<ForestPlayerController>();
+                if(!Allowed()||!ChoosePair(out CityLifeAgent a,out CityLifeAgent b)){yield return new WaitForSeconds(2);continue;}
+                activeA=a;activeB=b;lastA=a;lastB=b;Talk talk=ChooseTalk(a.seated);interrupted=false;
+                a.talkingUntil=b.talkingUntil=Time.time+90;a.conversationPartner=b.transform;b.conversationPartner=a.transform;
+                yield return Say(a,talk.a,talk.audio);
+                if(!interrupted)yield return Say(b,talk.b,talk.audio<0?-1:talk.audio+1);
+                bool cafe=a!=null&&a.seated;ClearActors();subtitle="";
+                yield return new WaitForSeconds(cafe?Random.Range(5f,10f):Random.Range(25f,45f));
             }
+        }
+        void ClearActors()
+        {
+            foreach(var actor in new[]{activeA,activeB})if(actor!=null){actor.talkingUntil=0;actor.speakingUntil=0;actor.conversationPartner=null;}
+            activeA=null;activeB=null;
         }
         IEnumerator Say(CityLifeAgent actor,string line,int audio)
         {
+            if(actor==null){interrupted=true;yield break;}
             AudioClip clip=audio<0?null:Resources.Load<AudioClip>("Crowd_"+audio);
-            source.transform.position=actor.transform.position+Vector3.up*1.4f;
-            source.clip=clip;if(clip!=null)source.Play();
-            float duration=clip!=null?clip.length:Mathf.Max(3,line.Length/14f);
+            source.transform.position=actor.transform.position+Vector3.up*1.4f;source.clip=clip;if(clip!=null)source.Play();
+            float duration=clip!=null?clip.length:Mathf.Clamp(line.Length/16f,3,8);actor.speakingUntil=Time.time+duration;
             for(float t=0;t<duration;t+=Time.deltaTime)
             {
-                if(player==null||!player.IsControlEnabled||StoryQuestManager.Instance.IsMenuOpen){source.Stop();subtitle="";yield break;}
-                subtitle=Vector3.Distance(player.transform.position,actor.transform.position)<12?(actor.seated?"Посетитель: ":"Прохожий: ")+line:"";
-                yield return null;
+                if(!Allowed()||actor==null||Vector3.Distance(player.transform.position,actor.transform.position)>13)
+                {interrupted=true;source.Stop();subtitle="";yield break;}
+                subtitle=(actor.seated?"Посетитель: ":"Прохожий: ")+line;yield return null;
             }
-            subtitle="";yield return new WaitForSeconds(0.4f);
+            if(actor!=null)actor.speakingUntil=0;subtitle="";yield return new WaitForSeconds(0.35f);
         }
-        void OnDisable(){StopAllCoroutines();subtitle="";if(source!=null)source.Stop();}
+        void OnDisable(){StopAllCoroutines();ClearActors();subtitle="";if(source!=null)source.Stop();}
         void OnGUI()
         {
-            if(string.IsNullOrEmpty(subtitle))return;
-            GUI.Box(new Rect(Screen.width*0.16f,Screen.height*0.71f,Screen.width*0.68f,75),subtitle,
-                new GUIStyle(GUI.skin.box){fontSize=19,wordWrap=true,alignment=TextAnchor.MiddleCenter});
+            if(string.IsNullOrEmpty(subtitle)||!Allowed())return;
+            GUI.depth=-120;
+            GUI.Box(new Rect(Screen.width*0.12f,Screen.height*0.81f,Screen.width*0.76f,Mathf.Max(74,Screen.height*0.11f)),subtitle,
+                new GUIStyle(GUI.skin.box){fontSize=Mathf.Clamp(Mathf.RoundToInt(Screen.height/48f),16,24),wordWrap=true,alignment=TextAnchor.MiddleCenter});
         }
     }
 }

@@ -7,6 +7,7 @@ namespace Dimari.City
     {
         public Transform cup, slice;
         public Vector3 platePosition;
+        CityLifeAgent guest;
         Animator animator;
         Transform upper, lower, hand, head, jaw;
         Quaternion jawRest, upperRest, lowerRest;
@@ -15,6 +16,7 @@ namespace Dimari.City
         float offset;
         void Start()
         {
+            guest=GetComponent<CityLifeAgent>();
             animator=GetComponentInChildren<Animator>();if(animator==null||!animator.isHuman)return;
             upper=animator.GetBoneTransform(HumanBodyBones.RightUpperArm);lower=animator.GetBoneTransform(HumanBodyBones.RightLowerArm);
             hand=animator.GetBoneTransform(HumanBodyBones.RightHand);head=animator.GetBoneTransform(HumanBodyBones.Head);jaw=animator.GetBoneTransform(HumanBodyBones.Jaw);
@@ -24,6 +26,14 @@ namespace Dimari.City
         void LateUpdate()
         {
             if(upper==null||lower==null||hand==null||head==null)return;
+            if(guest!=null&&Time.time<guest.speakingUntil)
+            {
+                if(cup!=null){cup.position=cupRest;cup.rotation=cupRotation;}
+                if(slice!=null)slice.gameObject.SetActive(false);
+                lower.localRotation=lowerRest;
+                if(jaw!=null)jaw.localRotation=jawRest;
+                return; // Leave the speaking arm gesture from CityLifeAgent intact.
+            }
             float phase=(Time.time+offset)%22;
             bool drink=phase>=12&&phase<17;
             bool eat=phase>=3&&phase<8;
