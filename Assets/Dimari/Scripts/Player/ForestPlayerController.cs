@@ -220,6 +220,8 @@ namespace Dimari.Player
                     go.GetComponent<Terrain>() == null &&
                     go.GetComponent<CharacterController>() == null &&
                     go.GetComponent<InteractableStoryObject>() == null &&
+                    go.GetComponentInParent<Dimari.City.CityLifeAgent>() == null &&
+                    go.GetComponentInParent<Dimari.Vehicles.CityDriveableCar>() == null &&
                     !go.CompareTag("Player"))
                 {
                     col.enabled = false;
@@ -241,7 +243,9 @@ namespace Dimari.Player
             {
                 if (mr == null || !mr.gameObject.activeInHierarchy) continue;
 
-                if (mr.transform.root.CompareTag("Player") || mr.GetComponentInParent<InteractableStoryObject>() != null)
+                if (mr.transform.root.CompareTag("Player") || mr.GetComponentInParent<InteractableStoryObject>() != null ||
+                    mr.GetComponentInParent<Dimari.City.CityLifeAgent>() != null ||
+                    mr.GetComponentInParent<Dimari.Vehicles.CityDriveableCar>() != null)
                     continue;
 
                 string pathLower = GetHierarchyPathLower(mr.transform);

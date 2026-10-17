@@ -16,11 +16,11 @@ namespace Dimari.Cinematics
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetSession(){IsRunning=false;}
         readonly string[] lines={
-            "Тааааааак, бляяяять, какого хуя ты тут стоишь?",
+            "Тааааааак, , какого чёртааааа ты тут стоишь?",
             "Я тут тоже подрабатываю в свободное время. Я тогда, когда ела рыбу, забыла тебе рассказать, что я тут тоже работаю.",
-            "Ты, походу, своей тухлятской едой все мозги просрочила. Ладно, хуй с тобой. ГДЕ БЛЯТЬ ДИМАРИК?",
-            "Он, когда закончил работать в 17:00, уехал в спортивный зал «Донспорт». Езжай туда, и я уверена, тебе точно там расскажут.",
-            "Надеюсь, твоё ебло больше не увижу, похлёбка кефира просроченного."
+            "Ты, походу, своей тухлятской едой все мозги просрочила. Ладно, чёрт с тобой. ГДЕ, ЧЁРТ ВОЗЬМИ, ДИМАРИК?",
+            "Он, когда закончил работать в 17:00, уехал в спортивный зал «Донспорт». Езжай туда, и я уверен, тебе точно там расскажут.",
+            "Надеюсь, твою физиономию больше не увижу, похлёбка кефира просроченного."
         };
         ForestPlayerController player;
         StoryQuestManager story;
@@ -68,6 +68,14 @@ namespace Dimari.Cinematics
             story.SetInteractionPrompt("[E] Поговорить с Обжоркой Просрочки");prompted=true;
             if(DimariInput.IsInteractPressed())StartCoroutine(Play());
         }
+        public void ReplayForPreview()
+        {
+            story=StoryQuestManager.Instance;if(player==null)player=FindAnyObjectByType<ForestPlayerController>();
+            if(seller==null)seller=transform.Find("Pizza seller Obzhorka");
+            if(!Application.isPlaying||IsRunning||story==null||story.IsMenuOpen||player==null||!player.IsControlEnabled||!NearCounter())
+            {Debug.LogWarning("[Dimari] Для повтора разговора подойдите к стойке в Play и закройте меню.",this);return;}
+            StartCoroutine(Play());
+        }
         IEnumerator Play()
         {
             cam=Camera.main;if(cam==null||seller==null||player==null)yield break;
@@ -100,7 +108,7 @@ namespace Dimari.Cinematics
             for(int i=0;i<lines.Length;i++)
             {
                 sellerSpeaking=i%2==1;subtitle=(sellerSpeaking?"Обжорка Просрочки":"Главный герой")+":\n"+lines[i];
-                AudioClip clip=Resources.Load<AudioClip>("Voice_Pizza_"+i);speech.clip=clip;if(clip!=null)speech.Play();
+                AudioClip clip=Resources.Load<AudioClip>("Voice_PizzaClean_"+i);speech.clip=clip;if(clip!=null)speech.Play();
                 SetShot(sellerSpeaking);
                 float duration=clip!=null?clip.length+0.35f:Mathf.Clamp(lines[i].Length/12f,4.5f,16f);
                 for(float t=0;t<duration;)

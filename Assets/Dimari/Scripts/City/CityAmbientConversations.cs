@@ -26,6 +26,15 @@ namespace Dimari.City
             bank.Add(new Talk(false,"В администрации сегодня видел какого-то парня. Всё спрашивал про пропавшего коллегу.","Надеюсь, найдётся. Тут все друг друга знают, поспрашивает и разберётся.",2));
             bank.Add(new Talk(true,"Я возьму пепперони. Только в этот раз давай без споров, кому достался последний кусок.","Тогда сразу две закажем. И салфеток побольше, у тебя опять весь стол будет в соусе.",4));
             bank.Add(new Talk(true,"Смотри, тут даже пицца с трюфелем есть. А я всё время одну маргариту беру.","Ну попробуй что-нибудь новое. Только сначала цену посмотри, любитель экспериментов.",6));
+            string[] dimarik={
+                "Ты Димарика случайно не знаешь?|Лично нет. Но слышал, его тут разыскивают.",
+                "Тот парень у стойки спрашивал про Димарика.|Надеюсь, найдёт. Неприятно, когда человек не выходит на связь.",
+                "Если Димарика встретим, скажем, что его ищут?|Конечно. Только сначала убедимся, что это он.",
+                "Кто-нибудь оставил номер для связи с Димариком?|Не знаю. Лучше спросить сотрудника, а не строить догадки.",
+                "Димарик эту пиццерию вроде любит?|Может быть. Я бы на месте его друга начал со стойки.",
+                "Ты бы что делал, если друг вдруг пропал?|Позвонил общим знакомым. И не стал бы верить каждому слуху."
+            };
+            foreach(string line in dimarik){var parts=line.Split('|');bank.Add(new Talk(true,parts[0],parts[1],-1,"Димарик"));}
             string[] street={"Автобус уже ушёл?|Ничего, следующий через десять минут.","Ночью дождь обещали.|Я зонт ещё утром в машине оставила.","У тебя телефон ловит?|Только возле перекрёстка, здесь опять пропадает сеть.","В парке фонари починили.|Отлично, можно вечером прогуляться.","Магазин ещё открыт?|До одиннадцати, успеем.","На работе сегодня тихо?|Тихо было, пока начальник не приехал."};
             foreach(string line in street){var p=line.Split('|');bank.Add(new Talk(false,p[0],p[1]));}
             string[] cafe={
@@ -81,20 +90,40 @@ namespace Dimari.City
             if(Mathf.Abs(p.x)>6||Mathf.Abs(p.z)>5)return -1;
             return p.x<0?0:(p.z< -1.025f?1:2);
         }
+        bool InsidePizza()
+        {
+            var pizza=GameObject.Find("Dimari_PizzaExpress24");if(pizza==null||player==null)return false;
+            Vector3 p=pizza.transform.InverseTransformPoint(player.transform.position);
+            return Mathf.Abs(p.x)<5.9f&&p.z> -4.85f&&p.z<4.85f&&p.y> -0.5f&&p.y<3.8f;
+        }
+        bool CanHear(CityLifeAgent actor,bool requireVisible=false)
+        {
+            if(actor==null||player==null||actor.gameObject.scene!=player.gameObject.scene&&actor.gameObject.scene!=gameObject.scene)return false;
+            if(actor.seated&&!InsidePizza())return false;
+            Vector3 point=actor.transform.position+Vector3.up*1.2f;
+            var animator=actor.GetComponentInChildren<Animator>();if(animator!=null&&animator.isHuman){var head=animator.GetBoneTransform(HumanBodyBones.Head);if(head!=null)point=head.position;}
+            bool rendered=false;foreach(var r in actor.GetComponentsInChildren<Renderer>())if(r.enabled&&r.gameObject.activeInHierarchy){rendered=true;break;}
+            Camera cam=Camera.main;if(!rendered||cam==null||Vector3.Distance(player.transform.position,point)>10)return false;
+            if(requireVisible){Vector3 p=cam.WorldToViewportPoint(point);if(p.z<=0||p.x<0||p.x>1||p.y<0||p.y>1)return false;}
+            Vector3 origin=cam.transform.position;Vector3 delta=point-origin;
+            foreach(var hit in Physics.RaycastAll(origin,delta.normalized,delta.magnitude,~0,QueryTriggerInteraction.Ignore))
+            {if(hit.transform.IsChildOf(actor.transform)||hit.transform.IsChildOf(player.transform))continue;return false;}
+            return true;
+        }
         bool ChoosePair(out CityLifeAgent a,out CityLifeAgent b)
         {
             a=null;b=null;var agents=FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None);
             var building=GameObject.Find("Dimari_PizzaExpress24");Transform pizza=building!=null?building.transform:null;
-            Vector3 playerLocal=pizza!=null?pizza.InverseTransformPoint(player.transform.position):Vector3.one*100;
-            bool indoors=Mathf.Abs(playerLocal.x)<6&&Mathf.Abs(playerLocal.z)<5;
+            bool indoors=InsidePizza();
             int candidates=0;
             for(int i=0;i<agents.Length;i++)
             {
-                var first=agents[i];if(first.name=="Pizza seller Obzhorka"||(indoors&&!first.seated)||first.vehicle||first.gameObject.scene!=gameObject.scene||Time.time<first.talkingUntil||Vector3.Distance(first.transform.position,player.transform.position)>11)continue;
+                var first=agents[i];if((first.seated&&!indoors)||!CanHear(first)||first.name=="Pizza seller Obzhorka"||(indoors&&!first.seated)||first.vehicle||first.gameObject.scene!=gameObject.scene||Time.time<first.talkingUntil||Vector3.Distance(first.transform.position,player.transform.position)>11)continue;
                 for(int j=i+1;j<agents.Length;j++)
                 {
                     var second=agents[j];if(second.name=="Pizza seller Obzhorka"||second.vehicle||second.gameObject.scene!=gameObject.scene||Time.time<second.talkingUntil||first.seated!=second.seated||Vector3.Distance(second.transform.position,player.transform.position)>11||Vector3.Distance(first.transform.position,second.transform.position)>3.2f)continue;
                     if(first.seated&&(pizza==null||Table(first,pizza)<0||Table(first,pizza)!=Table(second,pizza)))continue;
+                    if(!CanHear(second)||(!CanHear(first,true)&&!CanHear(second,true)))continue;
                     if((first==lastA&&second==lastB)||(first==lastB&&second==lastA))continue;
                     if(Random.Range(0,++candidates)==0){a=first;b=second;}
                 }
@@ -140,7 +169,7 @@ namespace Dimari.City
             float duration=clip!=null?clip.length:Mathf.Clamp(line.Length/16f,3,8);actor.speakingUntil=Time.time+duration;
             for(float t=0;t<duration;t+=Time.deltaTime)
             {
-                if(!Allowed()||actor==null||Vector3.Distance(player.transform.position,actor.transform.position)>13)
+                if(!Allowed()||actor==null||!CanHear(actor))
                 {interrupted=true;source.Stop();subtitle="";yield break;}
                 subtitle=(actor.seated?"Посетитель: ":"Прохожий: ")+line;yield return null;
             }

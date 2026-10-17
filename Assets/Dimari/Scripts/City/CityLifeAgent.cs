@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 using Dimari.Player;
 using Dimari.Story;
 
@@ -10,6 +11,7 @@ namespace Dimari.City
         public int node, previous=-1;
         public float speed=1.1f;
         public bool vehicle, seated;
+        public float groundOffset;
         public float talkingUntil, speakingUntil;
         public Transform conversationPartner;
         Rigidbody body;
@@ -21,6 +23,9 @@ namespace Dimari.City
         void Start()
         {
             body=GetComponent<Rigidbody>();animator=GetComponentInChildren<Animator>();
+            if(graph!=null&&graph.nodes!=null&&node>=0&&node<graph.nodes.Length&&Mathf.Approximately(groundOffset,0))groundOffset=transform.position.y-graph.nodes[node].position.y;
+            foreach(var renderer in GetComponentsInChildren<Renderer>()){renderer.allowOcclusionWhenDynamic=false;renderer.forceRenderingOff=false;renderer.shadowCastingMode=ShadowCastingMode.On;if(renderer is SkinnedMeshRenderer skinned)skinned.updateWhenOffscreen=true;}
+            if(!vehicle)foreach(var lod in GetComponentsInChildren<LODGroup>())lod.ForceLOD(0);
             if(animator!=null&&animator.isHuman)
             {
                 animator.enabled=false;
@@ -32,8 +37,9 @@ namespace Dimari.City
         }
         void FixedUpdate()
         {
+            if(StoryQuestManager.Instance!=null&&StoryQuestManager.Instance.IsMenuOpen)return;
             if(seated||graph==null||graph.nodes==null||node<0||node>=graph.nodes.Length||Time.time<talkingUntil)return;
-            Vector3 target=graph.nodes[node].position;Vector3 delta=target-transform.position;delta.y=0;
+            Vector3 target=graph.nodes[node].position+Vector3.up*groundOffset;Vector3 delta=target-transform.position;delta.y=0;
             if(delta.magnitude<0.3f)
             {
                 int[] links=graph.nodes[node].next;if(links==null||links.Length==0)return;
@@ -42,7 +48,7 @@ namespace Dimari.City
                 {
                     int next=links[Random.Range(0,links.Length)];
                     if(next==previous&&links.Length>1)continue;
-                    Vector3 dir=(graph.nodes[next].position-target).normalized;
+                    Vector3 dir=graph.nodes[next].position-graph.nodes[node].position;dir.y=0;dir.Normalize();
                     if(vehicle&&Vector3.Dot(forward,dir)<-0.1f)continue;
                     chosen=next;break;
                 }
@@ -50,7 +56,7 @@ namespace Dimari.City
             }
             Vector3 direction=delta.normalized;
             float range=vehicle?4.5f:0.9f;
-            Vector3 center=transform.position+Vector3.up*(vehicle?0.85f:0.8f)+direction*(range*0.5f+0.7f);
+            Vector3 center=transform.position-Vector3.up*groundOffset+Vector3.up*(vehicle?0.85f:0.8f)+direction*(range*0.5f+0.7f);
             foreach(Collider hit in Physics.OverlapBox(center,new Vector3(vehicle?0.95f:0.28f,0.5f,range*0.5f),Quaternion.LookRotation(direction),~0,QueryTriggerInteraction.Ignore))
             {
                 if(hit.transform.IsChildOf(transform))continue;

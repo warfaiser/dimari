@@ -71,14 +71,18 @@ namespace Dimari.Editor
             EditorUtility.DisplayDialog("Город","Добавлено: машин "+cars+", прохожих "+walkers+", посетителей "+visitors+".\nУзлов дороги "+road.nodes.Length+", тротуара "+walk.nodes.Length+". Если узлов нет, покрытие не распознано по материалам — ничего не пущено через дома.\nИспользовано моделей людей: "+people.Count+". При единственной модели персонажи будут похожи. Проверьте город в Play, затем сохраните Ctrl+S.","OK");
         }
 
-        static CityLifeGraph Graph(Transform root,bool pedestrians)
+        public static string LastGraphReport { get; private set; }
+        public static CityLifeGraph Graph(Transform root,bool pedestrians)
         {
-            float step=pedestrians?3:6;
+            float step=pedestrians?2:4;
             var cells=new Dictionary<Vector2Int,Vector3>();
-            int scanned=0;
+            int scanned=0,matched=0;var names=new HashSet<string>();
+            var pizzaReference=GameObject.Find("Dimari_PizzaExpress24");
             foreach(MeshFilter filter in Object.FindObjectsByType<MeshFilter>(FindObjectsSortMode.None))
             {
-                if(filter.gameObject.scene!=root.gameObject.scene||filter.transform.IsChildOf(root)||filter.name.Contains("Pizza"))continue;
+                if(filter.gameObject.scene!=root.gameObject.scene||filter.transform.IsChildOf(root)||filter.GetComponentInParent<CityLifeAgent>()!=null)continue;
+                bool generated=false;for(Transform t=filter.transform;t!=null;t=t.parent)if(t.name=="Dimari_PizzaExpress24"||t.name=="Dimari_Donsport")generated=true;
+                if(generated)continue;
                 Renderer renderer=filter.GetComponent<Renderer>();if(renderer==null||filter.sharedMesh==null)continue;
                 Material[] materials=renderer.sharedMaterials;
                 using(var data=Mesh.AcquireReadOnlyMeshData(filter.sharedMesh))
@@ -87,9 +91,13 @@ namespace Dimari.Editor
                     for(int sub=0;sub<data[0].subMeshCount&&sub<materials.Length;sub++)
                     {
                         if(materials[sub]==null)continue;string name=materials[sub].name.ToLowerInvariant();
-                        bool sidewalk=name.Contains("sidewalk")||name.Contains("pavement")||name.Contains("walkway");
-                        bool asphalt=!sidewalk&&(name.Contains("asphalt")||name.Contains("road")||name.Contains("street"));
-                        if(pedestrians?!sidewalk:!asphalt)continue;
+                        if(names.Count<24)names.Add(name);
+                        string label=name+" "+filter.name.ToLowerInvariant()+" "+AssetDatabase.GetAssetPath(filter.sharedMesh).ToLowerInvariant();
+                        Texture texture=materials[sub].HasProperty("_BaseMap")?materials[sub].GetTexture("_BaseMap"):(materials[sub].HasProperty("_MainTex")?materials[sub].GetTexture("_MainTex"):null);
+                        if(texture!=null)label+=" "+texture.name.ToLowerInvariant();
+                        bool sidewalk=label.Contains("sidewalk")||label.Contains("side_walk")||label.Contains("pavement")||label.Contains("walkway")||label.Contains("paving")||label.Contains("footpath")||label.Contains("trotuar")||label.Contains("тротуар");
+                        bool asphalt=!sidewalk&&(label.Contains("asphalt")||label.Contains("asfalt")||label.Contains("road")||label.Contains("street"));
+                        if(pedestrians?!sidewalk:!asphalt)continue;matched++;
                         var desc=data[0].GetSubMesh(sub);if(desc.topology!=MeshTopology.Triangles)continue;
                         var indices=new Unity.Collections.NativeArray<int>(desc.indexCount,Unity.Collections.Allocator.Temp);data[0].GetIndices(indices,sub);
                         for(int i=0;i<indices.Length;i+=3)
@@ -98,11 +106,11 @@ namespace Dimari.Editor
                             if(Mathf.Abs(Vector3.Cross(b-a,c-a).normalized.y)<0.98f)continue;
                             float minX=Mathf.Min(a.x,b.x,c.x),maxX=Mathf.Max(a.x,b.x,c.x),minZ=Mathf.Min(a.z,b.z,c.z),maxZ=Mathf.Max(a.z,b.z,c.z);
                             if(maxX-minX>1500||maxZ-minZ>1500)continue;
-                            for(int x=Mathf.CeilToInt(minX/step);x<=Mathf.FloorToInt(maxX/step);x++)for(int z=Mathf.CeilToInt(minZ/step);z<=Mathf.FloorToInt(maxZ/step);z++)
+                            for(int x=Mathf.CeilToInt(minX/step);x<=Mathf.FloorToInt(maxX/step)&&scanned<2000000;x++)for(int z=Mathf.CeilToInt(minZ/step);z<=Mathf.FloorToInt(maxZ/step)&&scanned<2000000;z++)
                             {
                                 if(++scanned>2000000)break;
                                 Vector3 p=new Vector3(x*step,0,z*step);
-                                if(!Height(p,a,b,c,out float y))continue;p.y=y+0.06f;
+                                if(!Height(p,a,b,c,out float y))continue;if(pizzaReference!=null&&Mathf.Abs(y-pizzaReference.transform.position.y)>1.5f)continue;p.y=y+0.06f;
                                 if(!Physics.Raycast(p+Vector3.up*0.5f,Vector3.down,out RaycastHit hit,1.2f,~0,QueryTriggerInteraction.Ignore)||Mathf.Abs(hit.point.y-y)>0.15f)continue;
                                 Vector3 ext=pedestrians?new Vector3(0.3f,0.65f,0.3f):new Vector3(1,0.65f,1);
                                 if(Physics.OverlapBox(p+Vector3.up*0.9f,ext,Quaternion.identity,~0,QueryTriggerInteraction.Ignore).Length>0)continue;
@@ -125,11 +133,12 @@ namespace Dimari.Editor
                 {
                     if(!ids.TryGetValue(keys[i]+offset,out int n)||Mathf.Abs(cells[keys[n]].y-cells[keys[i]].y)>0.18f)continue;
                     Vector3 start=cells[keys[i]]+Vector3.up*0.9f,end=cells[keys[n]]+Vector3.up*0.9f;
-                    if(Physics.Linecast(start,end,~0,QueryTriggerInteraction.Ignore))continue;
+                    if(Physics.SphereCast(start,pedestrians?0.25f:0.8f,(end-start).normalized,out RaycastHit obstacle,Vector3.Distance(start,end),~0,QueryTriggerInteraction.Ignore))continue;
                     next.Add(n);
                 }
                 graph.nodes[i]=new CityLifeGraph.Node{position=cells[keys[i]],next=next.ToArray()};
             }
+            LastGraphReport=(pedestrians?"Тротуары":"Дороги")+": распознано поверхностей "+matched+", узлов "+graph.nodes.Length+", проверок "+scanned+". Материалы: "+string.Join(", ",names);
             return graph;
         }
         static bool Height(Vector3 p,Vector3 a,Vector3 b,Vector3 c,out float y)
@@ -138,7 +147,7 @@ namespace Dimari.Editor
             float u=((b.z-c.z)*(p.x-c.x)+(c.x-b.x)*(p.z-c.z))/d,v=((c.z-a.z)*(p.x-c.x)+(a.x-c.x)*(p.z-c.z))/d,w=1-u-v;
             if(u< -0.0001f||v< -0.0001f||w< -0.0001f)return false;y=u*a.y+v*b.y+w*c.y;return true;
         }
-        static void Strip(GameObject go)
+        public static void Strip(GameObject go)
         {
             foreach(MonoBehaviour b in go.GetComponentsInChildren<MonoBehaviour>(true))Object.DestroyImmediate(b);
             foreach(Collider c in go.GetComponentsInChildren<Collider>(true))Object.DestroyImmediate(c);
