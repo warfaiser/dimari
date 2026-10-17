@@ -153,55 +153,122 @@ namespace Dimari.Editor
             else Debug.Log("[Dimari] Подготовлены модели City People: "+found+". Исходный пакет не изменён.");
         }
 
-        static string Pests(Transform pizza,string type,int count,float length,float speed)
+        public static bool FindPestModel(string type,out GameObject model,out string modelPath)
         {
-            if(pizza.Find("Pizza pests "+type)!=null)return type+": уже установлены.\n";
+            model=null;modelPath=null;int best=0;
             string folder="Assets/Dimari/Imports/"+type;
-            if(!AssetDatabase.IsValidFolder(folder))return type+": нужна модель в "+folder+".\n";
-            GameObject model=null;string modelPath=null;
-            foreach(string guid in AssetDatabase.FindAssets("t:Model",new[]{folder}))
+            if(!AssetDatabase.IsValidFolder(folder))return false;
+            string[] guids=AssetDatabase.FindAssets("t:Model",new[]{folder});System.Array.Sort(guids,System.StringComparer.Ordinal);
+            foreach(string guid in guids)
             {
                 string path=AssetDatabase.GUIDToAssetPath(guid);
                 if(!path.EndsWith(".fbx",System.StringComparison.OrdinalIgnoreCase)&&!path.EndsWith(".obj",System.StringComparison.OrdinalIgnoreCase))continue;
-                model=AssetDatabase.LoadAssetAtPath<GameObject>(path);modelPath=path;break;
+                var candidate=AssetDatabase.LoadAssetAtPath<GameObject>(path);if(candidate==null)continue;
+                int vertices=0;
+                foreach(var mesh in candidate.GetComponentsInChildren<MeshFilter>(true))if(mesh.sharedMesh!=null)vertices+=mesh.sharedMesh.vertexCount;
+                foreach(var mesh in candidate.GetComponentsInChildren<SkinnedMeshRenderer>(true))if(mesh.sharedMesh!=null)vertices+=mesh.sharedMesh.vertexCount;
+                if(vertices<=best)continue;best=vertices;model=candidate;modelPath=path;
             }
-            if(model==null)return type+": FBX/OBJ не найден. GLB требует отдельного импортера.\n";
-            var importer=AssetImporter.GetAtPath(modelPath) as ModelImporter;
-            if(importer!=null)
+            return model!=null;
+        }
+        static bool IsRun(string name)
+        {
+            name=name.ToLowerInvariant();return name.Contains("run")||name.Contains("walk")||name.Contains("crawl")||name.Contains("sprint")||name.Contains("locomotion");
+        }
+        static AnimationClip RunClip(string modelPath,string folder)
+        {
+            var paths=new List<string>{modelPath};
+            foreach(string guid in AssetDatabase.FindAssets("t:Model",new[]{folder}))
+            {string path=AssetDatabase.GUIDToAssetPath(guid);if(path!=modelPath&&path.EndsWith(".fbx",System.StringComparison.OrdinalIgnoreCase))paths.Add(path);}
+            foreach(string path in paths)
             {
-                var clips=importer.clipAnimations;if(clips.Length==0)clips=importer.defaultClipAnimations;
+                var importer=AssetImporter.GetAtPath(path) as ModelImporter;
+                if(importer==null)continue;
                 bool changed=false;
+                if(!importer.importAnimation){importer.importAnimation=true;changed=true;}
+                if(importer.animationType==ModelImporterAnimationType.Human||importer.animationType==ModelImporterAnimationType.None)
+                {importer.animationType=ModelImporterAnimationType.Generic;importer.avatarSetup=ModelImporterAvatarSetup.CreateFromThisModel;importer.sourceAvatar=null;changed=true;}
+                if(changed)importer.SaveAndReimport();
+                var clips=importer.clipAnimations;if(clips.Length==0)clips=importer.defaultClipAnimations;
                 for(int i=0;i<clips.Length;i++)
-                {string name=clips[i].name.ToLowerInvariant();if((name.Contains("run")||name.Contains("walk")||name.Contains("crawl"))&&!clips[i].loopTime){clips[i].loopTime=true;changed=true;}}
-                if(changed){importer.clipAnimations=clips;importer.SaveAndReimport();model=AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);}
+                {
+                    // One anonymous FBX take is common for the downloaded cockroach walk cycle.
+                    bool anonymous=clips.Length==1&&(clips[i].name.ToLowerInvariant().Contains("take")||clips[i].name.ToLowerInvariant().Contains("armature"));
+                    if(!IsRun(clips[i].name)&&!anonymous)continue;
+                    clips[i].loopTime=true;clips[i].loopPose=true;clips[i].lockRootPositionXZ=true;clips[i].lockRootHeightY=true;clips[i].lockRootRotation=true;
+                }
+                if(clips.Length>0){importer.clipAnimations=clips;importer.SaveAndReimport();}
+                AnimationClip fallback=null;int total=0;
+                foreach(Object obj in AssetDatabase.LoadAllAssetsAtPath(path))if(obj is AnimationClip clip&&!clip.name.StartsWith("__preview__"))
+                {total++;fallback=clip;if(IsRun(clip.name))return clip;}
+                if(total==1&&fallback!=null&&(fallback.name.ToLowerInvariant().Contains("take")||fallback.name.ToLowerInvariant().Contains("armature")))return fallback;
             }
-            var group=new GameObject("Pizza pests "+type);group.transform.SetParent(pizza,false);Undo.RegisterCreatedObjectUndo(group,"Add pizza pests");
-            AnimationClip run=null;
-            foreach(Object obj in AssetDatabase.LoadAllAssetsAtPath(modelPath))if(obj is AnimationClip clip&&!clip.name.StartsWith("__preview__"))
-            {string name=clip.name.ToLowerInvariant();if(name.Contains("run")||name.Contains("walk")||name.Contains("crawl")){run=clip;break;}}
+            return null;
+        }
+        public static string Pests(Transform pizza,string type,int count,float length,float speed,bool replace=false)
+        {
+            Transform existing=pizza.Find("Pizza pests "+type);
+            if(existing!=null&&!replace)return type+": уже установлены.\n";
+            string folder="Assets/Dimari/Imports/"+type;
+            if(!FindPestModel(type,out GameObject model,out string modelPath))
+                return type+": не найдена геометрия FBX/OBJ в "+folder+". BLEND/GLB текущим установщиком не поддерживаются. Старые объекты сохранены.\n";
+            Directory.CreateDirectory(Output);AssetDatabase.Refresh();
+            AnimationClip run=RunClip(modelPath,folder);model=AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
             AnimatorController controller=null;
             if(run!=null&&!run.legacy)
             {
                 string path=Output+"/"+type+"Run.controller";controller=AssetDatabase.LoadAssetAtPath<AnimatorController>(path);
                 if(controller==null)controller=AnimatorController.CreateAnimatorControllerAtPath(path);
-                if(controller.layers[0].stateMachine.states.Length==0){var state=controller.layers[0].stateMachine.AddState("Run");state.motion=run;controller.layers[0].stateMachine.defaultState=state;}
+                var machine=controller.layers[0].stateMachine;
+                var state=machine.defaultState;
+                if(state==null)state=machine.AddState("Run");
+                state.motion=run;machine.defaultState=state;EditorUtility.SetDirty(state);EditorUtility.SetDirty(controller);
             }
+            // Validate source before replacing only this species, never the restaurant or people.
+            var group=new GameObject("Pizza pests "+type+" (preparing)");group.transform.SetParent(pizza,false);Undo.RegisterCreatedObjectUndo(group,"Add random pizza pests");
+            int added=0;Physics.SyncTransforms();var occupied=new List<Vector3>();
             for(int i=0;i<count;i++)
             {
-                var wrapper=new GameObject(type+" "+(i+1));wrapper.transform.SetParent(group.transform,false);
-                wrapper.transform.localPosition=new Vector3((i%2==0?-1:1)*(4.8f-(i%3)*0.4f),0.055f,-3.7f+(i%5)*1.6f);
+                Vector3 local=Vector3.zero;bool found=false;float radius=type=="Cockroach"?0.008f:0.035f;
+                // Deterministic, distributed starting cells; runtime directions and pauses are random.
+                for(int attempt=0;attempt<160;attempt++)
+                {
+                    int cell=(i*29+attempt*37)%160;
+                    local=new Vector3(-5.2f+(cell%16)*0.69f,0.035f,-4.1f+(cell/16)*0.9f);
+                    Vector3 world=pizza.TransformPoint(local);
+                    bool close=false;foreach(Vector3 point in occupied)if((point-world).sqrMagnitude<0.12f){close=true;break;}
+                    if(close||Physics.CheckSphere(world+Vector3.up*(radius+0.025f),radius,~0,QueryTriggerInteraction.Ignore))continue;
+                    if(!Physics.Raycast(world+Vector3.up*0.1f,Vector3.down,out RaycastHit support,0.22f,~0,QueryTriggerInteraction.Ignore)||support.normal.y<0.85f||Mathf.Abs(pizza.InverseTransformPoint(support.point).y-0.03f)>0.07f)continue;
+                    if(support.collider.attachedRigidbody!=null||support.collider.GetComponentInParent<CityLifeAgent>()!=null)continue;
+                    local=pizza.InverseTransformPoint(support.point+Vector3.up*0.005f);occupied.Add(pizza.TransformPoint(local));found=true;break;
+                }
+                if(!found)continue;
+                var wrapper=new GameObject(type+" "+(i+1));wrapper.transform.SetParent(group.transform,false);wrapper.transform.localPosition=local;
                 var visual=Object.Instantiate(model,wrapper.transform);visual.name="Visual";visual.transform.localPosition=Vector3.zero;visual.transform.localRotation=Quaternion.identity;
-                foreach(Collider c in visual.GetComponentsInChildren<Collider>())Object.DestroyImmediate(c);
-                foreach(Rigidbody b in visual.GetComponentsInChildren<Rigidbody>())Object.DestroyImmediate(b);
+                foreach(Collider c in visual.GetComponentsInChildren<Collider>(true))Object.DestroyImmediate(c);
+                foreach(Rigidbody b in visual.GetComponentsInChildren<Rigidbody>(true))Object.DestroyImmediate(b);
                 Bounds bnd=new Bounds();bool first=true;foreach(Renderer r in visual.GetComponentsInChildren<Renderer>()){if(first){bnd=r.bounds;first=false;}else bnd.Encapsulate(r.bounds);}
                 float extent=Mathf.Max(bnd.size.x,bnd.size.z);if(extent>0.0001f)visual.transform.localScale*=length/extent;
-                float min=float.PositiveInfinity;foreach(Renderer r in visual.GetComponentsInChildren<Renderer>())min=Mathf.Min(min,r.bounds.min.y);
-                if(!float.IsInfinity(min))visual.transform.position+=Vector3.up*(wrapper.transform.position.y-min);
+                // Center visual horizontally on the steering root, and place feet on the floor.
+                first=true;foreach(Renderer r in visual.GetComponentsInChildren<Renderer>()){if(first){bnd=r.bounds;first=false;}else bnd.Encapsulate(r.bounds);}
+                if(!first)visual.transform.position+=new Vector3(wrapper.transform.position.x-bnd.center.x,wrapper.transform.position.y-bnd.min.y,wrapper.transform.position.z-bnd.center.z);
                 ConvertMaterials(visual,type);
-                var animator=visual.GetComponentInChildren<Animator>();if(animator!=null){animator.applyRootMotion=false;if(controller!=null)animator.runtimeAnimatorController=controller;}
-                var pest=wrapper.AddComponent<PizzaPest>();pest.room=pizza;pest.speed=speed;pest.radius=type=="Cockroach"?0.008f:0.03f;
+                var animator=visual.GetComponentInChildren<Animator>();
+                foreach(var a in visual.GetComponentsInChildren<Animator>(true)){a.applyRootMotion=false;a.enabled=false;}
+                if(controller!=null)
+                {
+                    if(animator==null)animator=visual.AddComponent<Animator>();
+                    animator.enabled=true;animator.applyRootMotion=false;animator.runtimeAnimatorController=controller;
+                }
+                else if(run!=null&&run.legacy)
+                {var animation=visual.GetComponent<Animation>();if(animation==null)animation=visual.AddComponent<Animation>();animation.AddClip(run,"DimariRun");animation.clip=run;animation.wrapMode=WrapMode.Loop;animation.playAutomatically=true;}
+                var pest=wrapper.AddComponent<PizzaPest>();pest.room=pizza;pest.speed=speed;pest.radius=radius;added++;
             }
-            return type+": добавлено "+count+(controller!=null?", найдена анимация бега.":", бег по полу без подтверждённого клипа лап.")+"\n";
+            if(added==0)
+            {Undo.DestroyObjectImmediate(group);return type+": не найдены свободные точки пола. Старые объекты сохранены. Проверьте коллайдер пола пиццерии.\n";}
+            if(existing!=null)Undo.DestroyObjectImmediate(existing.gameObject);
+            group.name="Pizza pests "+type;
+            return type+": добавлено "+added+" / "+count+(run!=null?", клип: "+run.name+".":", клип лап не распознан — только перемещение по полу.")+"\n";
         }
         static void ConvertMaterials(GameObject go,string prefix)
         {
@@ -216,8 +283,11 @@ namespace Dimari.Editor
                     string safe=prefix+"_"+original.name;foreach(char c in Path.GetInvalidFileNameChars())safe=safe.Replace(c,'_');
                     string path=Output+"/"+safe+".mat";Material mat=AssetDatabase.LoadAssetAtPath<Material>(path);
                     if(mat==null){mat=new Material(shader);AssetDatabase.CreateAsset(mat,path);}
-                    Texture color=original.HasProperty("_MainTex")?original.GetTexture("_MainTex"):null;
-                    mat.SetTexture("_BaseMap",color);mat.SetColor("_BaseColor",Color.white);mat.SetFloat("_Smoothness",0.25f);
+                    Texture color=original.HasProperty("_BaseMap")?original.GetTexture("_BaseMap"):(original.HasProperty("_MainTex")?original.GetTexture("_MainTex"):null);
+                    Color tint=original.HasProperty("_BaseColor")?original.GetColor("_BaseColor"):(original.HasProperty("_Color")?original.GetColor("_Color"):Color.white);
+                    mat.SetTexture("_BaseMap",color);mat.SetColor("_BaseColor",tint);mat.SetFloat("_Smoothness",0.25f);
+                    string textureProperty=original.HasProperty("_BaseMap")?"_BaseMap":"_MainTex";
+                    if(original.HasProperty(textureProperty)){mat.SetTextureScale("_BaseMap",original.GetTextureScale(textureProperty));mat.SetTextureOffset("_BaseMap",original.GetTextureOffset(textureProperty));}
                     if(original.HasProperty("_BumpMap")){Texture normal=original.GetTexture("_BumpMap");if(normal!=null){mat.SetTexture("_BumpMap",normal);mat.EnableKeyword("_NORMALMAP");}}
                     slots[i]=mat;EditorUtility.SetDirty(mat);
                 }
