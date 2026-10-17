@@ -34,6 +34,7 @@ namespace Dimari.Editor
             var pool=PreparePeople();int replaced=0;
             if(pool.Count>0)
             {
+                if(GameObject.Find("Dimari_CityLife")==null)CityLifeSetup.Install();
                 foreach(var old in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
                 {
                     if(old.vehicle||old.name=="Pizza seller Obzhorka"||old.gameObject.scene!=pizza.scene)continue;
@@ -55,7 +56,8 @@ namespace Dimari.Editor
                     var fresh=CityLifeSetup.Human(pool[i%pool.Count],pizza.transform,pizza.transform.TransformPoint(new Vector3(x,0.58f,-2.5f+side*0.8f)),pizza.transform.rotation*Quaternion.Euler(0,side<0?0:180,0),true);
                     Undo.RegisterCreatedObjectUndo(fresh.gameObject,"Add ordinary visitor");
                 }
-                report+="Готовых моделей обычных людей: "+pool.Count+"; заменено существующих людей: "+replaced+".\n";
+                int added=EnsureWalkers(pool);
+                report+="Готовых моделей обычных людей: "+pool.Count+"; заменено существующих людей: "+replaced+"; добавлено новых прохожих: "+added+".\n";
             }
             else report+="Обычные люди пока не импортированы. Положите разные FBX в Assets/Dimari/Imports/People и повторите команду. Старые люди не удалены.\n";
             report+=Pests(pizza.transform,"Rat",4,0.18f,0.45f);
@@ -63,8 +65,12 @@ namespace Dimari.Editor
             Undo.CollapseUndoOperations(undo);AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(pizza.scene);
             EditorUtility.DisplayDialog("Пиццерия",report+"\nМодели не скачиваются этой командой. Проверьте материалы, ориентацию и анимацию в Play, затем Ctrl+S.","OK");
         }
+        [MenuItem("Dimari/City People — подключить горожан и посетителей")]
+        public static void ConnectCityPeople() { Install(); }
+
         static List<GameObject> PreparePeople()
         {
+            ImportCityPeople();
             const string folder="Assets/Dimari/Imports/People";
             if(AssetDatabase.IsValidFolder(folder))foreach(string guid in AssetDatabase.FindAssets("t:Model",new[]{folder}))
             {
@@ -84,6 +90,62 @@ namespace Dimari.Editor
             }
             return result;
         }
+        static int EnsureWalkers(List<GameObject> pool)
+        {
+            foreach(var agent in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
+                if(!agent.vehicle&&!agent.seated&&agent.graph!=null&&agent.gameObject.scene==SceneManager.GetActiveScene())return 0;
+            CityLifeGraph graph=null;
+            foreach(var candidate in Object.FindObjectsByType<CityLifeGraph>(FindObjectsSortMode.None))
+                if(candidate.name=="Sidewalk graph"&&candidate.gameObject.scene==SceneManager.GetActiveScene())graph=candidate;
+            if(graph==null||graph.nodes==null)return 0;
+            int added=0;var used=new List<Vector3>();
+            for(int i=0;i<graph.nodes.Length&&added<12;i++)
+            {
+                if(graph.nodes[i].next==null||graph.nodes[i].next.Length==0)continue;
+                Vector3 point=graph.nodes[i].position;bool close=false;
+                foreach(Vector3 other in used)if(Vector3.Distance(point,other)<22)close=true;
+                if(close)continue;used.Add(point);
+                foreach(int node in new[]{i,graph.nodes[i].next[0]})
+                {
+                    var fresh=CityLifeSetup.Human(pool[added%pool.Count],graph.transform.parent,graph.nodes[node].position,Quaternion.identity,false);
+                    fresh.graph=graph;fresh.node=node;fresh.speed=0.8f+(added%4)*0.12f;
+                    Undo.RegisterCreatedObjectUndo(fresh.gameObject,"Add City People pedestrian");added++;
+                }
+            }
+            return added;
+        }
+
+        static void ImportCityPeople()
+        {
+            int found=0;
+            foreach(string guid in AssetDatabase.FindAssets("t:Prefab",new[]{"Assets"}))
+            {
+                string path=AssetDatabase.GUIDToAssetPath(guid);
+                string compact=path.ToLowerInvariant().Replace(" ","").Replace("_","").Replace("-","");
+                // Publisher folder names differ between package releases; do not assume one exact path.
+                if(!compact.Contains("citypeople")||path.StartsWith("Assets/Dimari/"))continue;
+                string name=Path.GetFileNameWithoutExtension(path);
+                string lower=name.ToLowerInvariant();
+                if(lower.Contains("demo")||lower.Contains("crowd")||lower.Contains("child")||lower.Contains("baby")||lower.Contains("kid"))continue;
+                var prefab=AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                if(prefab==null)continue;
+                Animator[] animators=prefab.GetComponentsInChildren<Animator>(true);
+                if(animators.Length!=1||animators[0].avatar==null||!animators[0].avatar.isValid||!animators[0].avatar.isHuman)continue;
+                if(prefab.GetComponentInChildren<Camera>(true)!=null)continue;
+                GameObject copy=Object.Instantiate(prefab);
+                try
+                {
+                    ConvertMaterials(copy,"CityPeople_"+guid.Substring(0,8));
+                    string destination="Assets/Dimari/NPCs/CityPeople_"+guid.Substring(0,8)+".prefab";
+                    PrefabUtility.SaveAsPrefabAsset(copy,destination);found++;
+                    Debug.Log("[Dimari] City People: "+path+" → "+destination);
+                }
+                finally { Object.DestroyImmediate(copy); }
+            }
+            if(found==0)Debug.LogWarning("[Dimari] Не найдены Humanoid-префабы в папках City People. Откройте Imported Assets в Package Manager и пришлите путь к префабам. Исходный пакет не изменён.");
+            else Debug.Log("[Dimari] Подготовлены модели City People: "+found+". Исходный пакет не изменён.");
+        }
+
         static string Pests(Transform pizza,string type,int count,float length,float speed)
         {
             if(pizza.Find("Pizza pests "+type)!=null)return type+": уже установлены.\n";
