@@ -2961,6 +2961,15 @@ namespace Dimari.Story
 
         public void SaveGame()
         {
+            if (Dimari.Cinematics.PizzaSellerCutscene.IsRunning)
+            { ShowStatusToast("Сохранитесь после окончания разговора."); return; }
+            int cityStage = 0;
+            foreach (QuestStep step in questSteps)
+            {
+                if (step.id == "city_donsport") cityStage = 2;
+                else if (step.id == "city_pizza_express" && cityStage < 1) cityStage = 1;
+            }
+            PlayerPrefs.SetInt("Dimari_Save_CityDialogueStage", cityStage);
             if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
             if (_player != null)
             {
@@ -3024,6 +3033,20 @@ namespace Dimari.Story
             for (int i = 0; i < questSteps.Count; i++)
             {
                 questSteps[i].isCompleted = PlayerPrefs.GetInt("Dimari_Save_Quest_" + questSteps[i].id, 0) == 1;
+            }
+
+            // Reconstruct the dynamic city dialogue objective only when loading in the city.
+            // New Game does not consult these save keys.
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "Chapter2_Rogovo")
+            {
+                int cityStage = PlayerPrefs.GetInt("Dimari_Save_CityDialogueStage", 0);
+                if (cityStage >= 1)
+                {
+                    questSteps.Clear();
+                    questSteps.Add(new QuestStep { id = "city_pizza_express", title = "Найти «Пицца Экспресс 24» и разыскать Димарика.", isCompleted = cityStage >= 2 });
+                    if (cityStage >= 2) questSteps.Add(new QuestStep { id = "city_donsport", title = "Поехать в спортивный зал «Донспорт» и расспросить о Димарике.", isCompleted = PlayerPrefs.GetInt("Dimari_Save_Quest_city_donsport", 0) == 1 });
+                    Dimari.Cinematics.OfficeFishCutscene.Completed = true;
+                }
             }
 
             if (_cameraController != null)

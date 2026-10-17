@@ -41,7 +41,7 @@ namespace Dimari.Story
             if (story == null || camera == null || player == null || story.IsMenuOpen
                 || (!player.IsControlEnabled && Dimari.Vehicles.CityDriveableCar.ActiveDriver == null)) return;
             bool quest = false;
-            foreach (var step in story.questSteps) if (step.id == "city_pizza_express") quest = true;
+            foreach (var step in story.questSteps) if (step.id == "city_pizza_express" && !step.isCompleted) quest = true;
             if (!quest) return;
             float distance = Vector3.Distance(player.transform.position, transform.position);
             bool driving = Dimari.Vehicles.CityDriveableCar.ActiveDriver != null;
