@@ -1413,6 +1413,8 @@ namespace Dimari.Story
         private bool _chapterSelectionOpen;
         private int _requestedChapter;
         private static int _pendingChapter;
+        // Temporary playtest shortcut: set false before release to hide the menu entry.
+        private const bool EnablePizzaChapterPreview = true;
         private const string ChapterForestScene = "Assets/Dimari/Scenes/ForestAwakening_TTFEL.unity";
 
         private void LaunchChapter(int chapter)
@@ -1421,7 +1423,7 @@ namespace Dimari.Story
             { ShowStatusToast("Лесная сцена не найдена в Scene List."); return; }
             string cityPath = string.IsNullOrWhiteSpace(cityScenePath)
                 ? "Assets/Dimari/Scenes/Chapter2_Rogovo.unity" : cityScenePath;
-            if (chapter == 2 && !Application.CanStreamedLevelBeLoaded(cityPath))
+            if (chapter >= 2 && !Application.CanStreamedLevelBeLoaded(cityPath))
             { ShowStatusToast("Добавьте Chapter2_Rogovo в Scene List."); return; }
             // A fresh forest bootstrap supplies the player, camera and story systems.
             // Do not call StartNewGame on a city manager: its forest dependencies were unloaded.
@@ -1430,7 +1432,7 @@ namespace Dimari.Story
             SceneManager.LoadScene(ChapterForestScene, LoadSceneMode.Single);
         }
 
-        private IEnumerator LaunchCityChapter()
+        private IEnumerator LaunchCityChapter(bool pizzaPreview = false)
         {
             if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
             if (_director != null) { _director.StopAllCoroutines(); _director.enabled = false; }
@@ -1449,7 +1451,7 @@ namespace Dimari.Story
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
             if (string.IsNullOrWhiteSpace(cityScenePath)) cityScenePath = "Assets/Dimari/Scenes/Chapter2_Rogovo.unity";
-            yield return ArriveInCity();
+            yield return ArriveInCity(pizzaPreview);
         }
 
         private void Update()
@@ -1466,7 +1468,7 @@ namespace Dimari.Story
                 int chapter = _pendingChapter;
                 _pendingChapter = 0;
                 if (chapter == 1) StartNewGame();
-                else StartCoroutine(LaunchCityChapter());
+                else StartCoroutine(LaunchCityChapter(chapter == 3 && EnablePizzaChapterPreview));
                 return;
             }
             if (_newGameRequested)
@@ -2496,7 +2498,7 @@ namespace Dimari.Story
             yield return CaptainDialogueLine("Капитан: " + answer, pirateCaptainAnswer, 19f, true, meetingLocal);
         }
 
-        private IEnumerator ArriveInCity()
+        private IEnumerator ArriveInCity(bool pizzaPreview = false)
         {
             if (!Application.CanStreamedLevelBeLoaded(cityScenePath))
             {
@@ -2545,7 +2547,11 @@ namespace Dimari.Story
             }
             CharacterController cc = _player.GetComponent<CharacterController>();
             if (cc != null) cc.enabled = false;
-            _player.transform.SetPositionAndRotation(arrival.position, arrival.rotation);
+            Vector3 spawnPosition = arrival.position;
+            Quaternion spawnRotation = arrival.rotation;
+            bool pizzaSpawn = pizzaPreview && TryFindPizzaPreviewSpawn(city, out spawnPosition, out spawnRotation);
+            if (!pizzaSpawn) { spawnPosition = arrival.position; spawnRotation = arrival.rotation; }
+            _player.transform.SetPositionAndRotation(spawnPosition, spawnRotation);
             if (_npcTransform != null)
                 _npcTransform.SetPositionAndRotation(arrival.position + arrival.right * 2f, arrival.rotation);
             SceneManager.SetActiveScene(city);
@@ -2559,12 +2565,53 @@ namespace Dimari.Story
             _showHUD = true;
             questSteps.Clear();
             questSteps.Add(new QuestStep { id = "city_administration", title = "Найти администрацию Рогово и узнать о Димарике." });
-            yield return CityCaptainFarewell(arrival);
+            if (pizzaSpawn)
+            {
+                questSteps.Clear();
+                questSteps.Add(new QuestStep { id = "city_pizza_express", title = "Найти «Пицца Экспресс 24» и разыскать Димарика." });
+                if (_npcTransform != null) _npcTransform.gameObject.SetActive(false);
+                ShowStatusToast("Тестовый старт у пиццерии. Сохранение не загружалось.");
+            }
+            else if (!pizzaPreview) yield return CityCaptainFarewell(arrival);
+            else ShowStatusToast("Безопасное место у пиццерии не найдено — старт у причала.");
             _player.ResetWaterMotion();
             if (cc != null) cc.enabled = true;
             _player.IsControlEnabled = true;
             _cameraController.BeginGameplayTransitionFromCutscene();
             _isPlayingEndingCutscene = false;
+        }
+
+        // Read-only placement search: never disables city colliders or changes the scene.
+        private bool TryFindPizzaPreviewSpawn(Scene city, out Vector3 position, out Quaternion rotation)
+        {
+            position = Vector3.zero;
+            rotation = Quaternion.identity;
+            Physics.SyncTransforms();
+            foreach (GameObject root in city.GetRootGameObjects())
+            foreach (PizzaExpressEntrance entrance in root.GetComponentsInChildren<PizzaExpressEntrance>())
+            {
+                Transform door = entrance.transform;
+                Vector3 outward = -door.forward;
+                foreach (float distance in new[] { 2f, 3f, 4f })
+                foreach (float side in new[] { 0f, -1.5f, 1.5f })
+                {
+                    Vector3 probe = door.position + outward * distance + door.right * side;
+                    RaycastHit ground;
+                    if (!Physics.Raycast(probe + Vector3.up * 2f, Vector3.down, out ground, 4f, ~0, QueryTriggerInteraction.Ignore)
+                        || ground.normal.y < 0.8f) continue;
+                    Vector3 feet = ground.point + Vector3.up * 0.08f;
+                    CharacterController controller = _player.GetComponent<CharacterController>();
+                    float radius = controller != null ? controller.radius * Mathf.Max(Mathf.Abs(_player.transform.lossyScale.x), Mathf.Abs(_player.transform.lossyScale.z)) : 0.4f;
+                    float height = controller != null ? controller.height * Mathf.Abs(_player.transform.lossyScale.y) : 1.8f;
+                    radius = Mathf.Max(radius, 0.35f);
+                    height = Mathf.Max(height, radius * 2f);
+                    if (Physics.CheckCapsule(feet + Vector3.up * radius, feet + Vector3.up * (height - radius), radius, ~0, QueryTriggerInteraction.Ignore)) continue;
+                    position = feet;
+                    rotation = Quaternion.LookRotation(Vector3.ProjectOnPlane(door.position - feet, Vector3.up));
+                    return true;
+                }
+            }
+            return false;
         }
 
         private IEnumerator CityCaptainFarewell(Transform arrival)
@@ -3529,8 +3576,9 @@ namespace Dimari.Story
                 GUI.Label(new Rect(64f, 170f, 420f, 35f), "ВЫБОР ГЛАВЫ", _chapter2TitleStyle);
                 if (DrawMenuButton(new Rect(64f, 220f, 420f, 50f), "ГЛАВА 1 — ОСТРОВ", 0)) _requestedChapter = 1;
                 if (DrawMenuButton(new Rect(64f, 282f, 420f, 50f), "ГЛАВА 2 — РОГОВО", 1)) _requestedChapter = 2;
-                GUI.Label(new Rect(64f, 345f, 420f, 55f), "Запуск с начала главы. Текущий прогресс не переносится.", _settingsLabelStyle);
-                if (DrawMenuButton(new Rect(64f, 415f, 420f, 46f), "НАЗАД", 2)) _chapterSelectionOpen = false;
+                if (EnablePizzaChapterPreview && DrawMenuButton(new Rect(64f, 344f, 520f, 50f), "ТЕСТ — ПОЯВИТЬСЯ У ПИЦЦЕРИИ", 2)) _requestedChapter = 3;
+                GUI.Label(new Rect(64f, 407f, 520f, 55f), "Запуск с начала главы. Текущий прогресс не переносится.", _settingsLabelStyle);
+                if (DrawMenuButton(new Rect(64f, 477f, 420f, 46f), "НАЗАД", 3)) _chapterSelectionOpen = false;
                 return;
             }
             if (!_isSettingsOpen)
