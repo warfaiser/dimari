@@ -46,6 +46,12 @@ namespace Dimari.Editor
                     }
                     var fresh=CityLifeSetup.Human(pool[replaced%pool.Count],old.transform.parent,position,old.transform.rotation,old.seated);
                     fresh.graph=old.graph;fresh.node=old.node;fresh.previous=old.previous;fresh.speed=old.speed;
+                    var dining=old.GetComponent<PizzaGuestEating>();
+                    if(dining!=null)
+                    {
+                        var replacement=fresh.gameObject.AddComponent<PizzaGuestEating>();
+                        replacement.cup=dining.cup;replacement.slice=dining.slice;replacement.platePosition=dining.platePosition;
+                    }
                     Undo.RegisterCreatedObjectUndo(fresh.gameObject,"Replace population model");Undo.DestroyObjectImmediate(old.gameObject);replaced++;
                 }
                 // Visitors may not have existed when CityLife was installed without ordinary people.
@@ -60,7 +66,8 @@ namespace Dimari.Editor
                 report+="Готовых моделей обычных людей: "+pool.Count+"; заменено существующих людей: "+replaced+"; добавлено новых прохожих: "+added+".\n";
             }
             else report+="Обычные люди пока не импортированы. Положите разные FBX в Assets/Dimari/Imports/People и повторите команду. Старые люди не удалены.\n";
-            report+=Pests(pizza.transform,"Rat",4,0.18f,0.45f);
+            if(AssetDatabase.IsValidFolder("Assets/Dimari/Imports/Mouse"))report+=Pests(pizza.transform,"Mouse",3,0.16f,0.4f);
+            else report+=Pests(pizza.transform,"Rat",4,0.18f,0.45f);
             report+=Pests(pizza.transform,"Cockroach",10,0.035f,0.18f);
             Undo.CollapseUndoOperations(undo);AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(pizza.scene);
             EditorUtility.DisplayDialog("Пиццерия",report+"\nМодели не скачиваются этой командой. Проверьте материалы, ориентацию и анимацию в Play, затем Ctrl+S.","OK");
@@ -192,7 +199,7 @@ namespace Dimari.Editor
                 if(!float.IsInfinity(min))visual.transform.position+=Vector3.up*(wrapper.transform.position.y-min);
                 ConvertMaterials(visual,type);
                 var animator=visual.GetComponentInChildren<Animator>();if(animator!=null){animator.applyRootMotion=false;if(controller!=null)animator.runtimeAnimatorController=controller;}
-                var pest=wrapper.AddComponent<PizzaPest>();pest.room=pizza;pest.speed=speed;pest.radius=type=="Rat"?0.03f:0.008f;
+                var pest=wrapper.AddComponent<PizzaPest>();pest.room=pizza;pest.speed=speed;pest.radius=type=="Cockroach"?0.008f:0.03f;
             }
             return type+": добавлено "+count+(controller!=null?", найдена анимация бега.":", бег по полу без подтверждённого клипа лап.")+"\n";
         }
