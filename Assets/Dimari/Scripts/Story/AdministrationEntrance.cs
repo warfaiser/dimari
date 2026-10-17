@@ -117,7 +117,7 @@ namespace Dimari.Story
             StoryQuestManager story = StoryQuestManager.Instance;
             Camera camera = Camera.main;
             if (busy || player == null || camera == null || story == null || story.IsMenuOpen
-                || !player.IsControlEnabled) return;
+                || (!player.IsControlEnabled && Dimari.Vehicles.CityDriveableCar.ActiveDriver == null)) return;
             float distance = Vector3.Distance(player.transform.position, transform.position);
             Vector3 point = camera.WorldToViewportPoint(transform.position + Vector3.up * 2.3f);
             bool onScreen = point.z > 0 && point.x > 0.08f && point.x < 0.92f
@@ -144,7 +144,8 @@ namespace Dimari.Story
                 fontSize = 18, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
                 richText = true, wordWrap = true
             };
-            string hint = distance < interactionDistance ? "[E] Войти в администрацию" : (onScreen ? "Подойдите ко входу" : direction);
+            bool driving = Dimari.Vehicles.CityDriveableCar.ActiveDriver != null;
+            string hint = distance < interactionDistance ? (driving ? "Остановитесь и выйдите из машины" : "[E] Войти в администрацию") : (onScreen ? (driving ? "Двигайтесь ко входу" : "Подойдите ко входу") : direction);
             GUI.Label(box, "<color=#FFE18A>◆ АДМИНИСТРАЦИЯ РОГОВО</color>\n"
                 + distance.ToString("0") + " м — " + hint, style);
         }

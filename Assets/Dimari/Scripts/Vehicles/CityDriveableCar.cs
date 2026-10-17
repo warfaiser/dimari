@@ -19,6 +19,9 @@ namespace Dimari.Vehicles
         private ForestPlayerController player;
         private ForestCameraController view;
         private Camera camera;
+        public static CityDriveableCar ActiveDriver { get; private set; }
+        public bool IsDriving => driving;
+        private void OnDisable() { if (ActiveDriver == this) ActiveDriver = null; }
         private bool driving, prompted;
         private Vector2 input;
         private bool handbrake;
@@ -75,6 +78,7 @@ namespace Dimari.Vehicles
             view = camera != null ? camera.GetComponent<ForestCameraController>() : null;
             if (camera == null || view == null) return;
             driving = true;
+            ActiveDriver = this;
             StoryQuestManager.Instance.SetInteractionPrompt("");
             player.StopLocomotionAnimation();
             player.ResetWaterMotion();
@@ -104,6 +108,7 @@ namespace Dimari.Vehicles
                 }
                 if (!found) continue;
                 driving = false; input = Vector2.zero;
+                if (ActiveDriver == this) ActiveDriver = null;
                 player.transform.SetPositionAndRotation(feet, Quaternion.Euler(0, transform.eulerAngles.y, 0));
                 for (int i = 0; i < playerRenderers.Length; i++)
                     if (playerRenderers[i] != null) playerRenderers[i].enabled = rendererStates[i];

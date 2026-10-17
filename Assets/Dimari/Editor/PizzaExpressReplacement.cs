@@ -92,6 +92,26 @@ namespace Dimari.Editor
             return modified;
         }
 
+        public static int ClearReplacementSite(Transform pizza, Bounds oldWorldBounds)
+        {
+            Directory.CreateDirectory("Assets/Dimari/Generated/PizzaExpress");AssetDatabase.Refresh();
+            Bounds footprint=new Bounds(pizza.InverseTransformPoint(oldWorldBounds.min),Vector3.zero);
+            for(int x=0;x<2;x++)for(int y=0;y<2;y++)for(int z=0;z<2;z++)
+                footprint.Encapsulate(pizza.InverseTransformPoint(new Vector3(x==0?oldWorldBounds.min.x:oldWorldBounds.max.x,y==0?oldWorldBounds.min.y:oldWorldBounds.max.y,z==0?oldWorldBounds.min.z:oldWorldBounds.max.z)));
+            Vector3 min=footprint.min-Vector3.one*0.15f,max=footprint.max+Vector3.one*0.15f;
+            min.y=0.25f;max.y=Mathf.Max(4,max.y);footprint.SetMinMax(min,max);
+            Bounds corridor=new Bounds(new Vector3(-4.1f,1.65f,-8.5f),new Vector3(3.2f,3,9));
+            int changed=0;
+            foreach(GameObject go in pizza.gameObject.scene.GetRootGameObjects())foreach(MeshCollider collider in go.GetComponentsInChildren<MeshCollider>())
+            {
+                if(collider.transform.IsChildOf(pizza)||collider.sharedMesh==null)continue;
+                Renderer visible=collider.GetComponent<Renderer>();
+                if(collider.name!="city_part_collider"&&visible!=null&&visible.enabled)continue;
+                if(Cut(collider,pizza.worldToLocalMatrix,footprint,corridor))changed++;
+            }
+            return changed;
+        }
+
         static bool Cut(MeshCollider collider,Matrix4x4 frame,Bounds footprint,Bounds corridor)
         {
             var vertices=new List<Vector3>();var indices=new List<int>();int affected=0;
