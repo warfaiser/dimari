@@ -1,3 +1,5 @@
+using System.IO;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -26,6 +28,21 @@ namespace Dimari.Editor
         }
         [MenuItem("Dimari/Донспорт — создать голову с фото прямо в Scene")]
         public static void Apply(){Build(true);}
+        static void RepairPortraitMeta(string path)
+        {
+            if(!File.Exists(path))return;
+            string metaPath=path+".meta";
+            if(!File.Exists(metaPath))return; // Unity generates a valid importer for a new file.
+            string text=File.ReadAllText(metaPath);
+            var version=Regex.Match(text,@"TextureImporter:\s*.*?serializedVersion:\s*(\d+)",RegexOptions.Singleline);
+            if(version.Success&&int.Parse(version.Groups[1].Value)>=10)return;
+            var guid=Regex.Match(text,@"(?m)^guid:\s*([0-9a-fA-F]{32})");
+            if(!guid.Success){Debug.LogError("[Dimari] Invalid portrait GUID: "+metaPath);return;}
+            // Minimal explicit importer v12; remaining defaults are filled by Unity on import.
+            File.WriteAllText(metaPath,"fileFormatVersion: 2\nguid: "+guid.Groups[1].Value
+                +"\nTextureImporter:\n  externalObjects: {}\n  serializedVersion: 12\n  textureType: 0\n  textureShape: 1\n  maxTextureSize: 2048\n  textureSettings:\n    serializedVersion: 2\n    filterMode: 1\n    aniso: 1\n    wrapU: 1\n    wrapV: 1\n    wrapW: 1\n  platformSettings: []\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n");
+            Debug.Log("[Dimari] Repaired portrait TextureImporter v12, GUID preserved: "+path);
+        }
         static void Fail(string message,Transform actor,bool report)
         {
             Debug.LogError("[Dimari] Scene photo head: "+message,actor);
@@ -44,7 +61,9 @@ namespace Dimari.Editor
             const string texturePath="Assets/Dimari/Resources/DonsportMaybeBabyFace.png";
             const string shaderPath="Assets/Dimari/Art/DonsportStory/PhotoFace.shader";
             const string materialPath="Assets/Dimari/Resources/DonsportPhotoBox.mat";
-            AssetDatabase.ImportAsset(texturePath,ImportAssetOptions.ForceUpdate);
+            RepairPortraitMeta(texturePath);
+            RepairPortraitMeta("Assets/Dimari/Art/DonsportStory/MaybeBabyFace.png");
+            AssetDatabase.ImportAsset(texturePath,ImportAssetOptions.ForceSynchronousImport|ImportAssetOptions.ForceUpdate);
             AssetDatabase.ImportAsset(shaderPath,ImportAssetOptions.ForceUpdate);
             var texture=AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
             if(texture==null)
