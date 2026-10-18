@@ -13,6 +13,7 @@ namespace Dimari.Cinematics
         public float photoWidth = 0.22f, forwardOffset = 0.145f, verticalOffset = -0.025f;
         public Vector3 boxSize = new Vector3(0.44f,0.50f,0.44f);
         public float boxCenterAboveHead = 0.08f;
+        [HideInInspector] public GameObject scenePhotoBox;
         Material photograph, sides;
         Texture2D sideTexture;
         Mesh mesh;
@@ -49,6 +50,12 @@ namespace Dimari.Cinematics
             head=animator.GetBoneTransform(HumanBodyBones.Head);
             if(head==null){Debug.LogError("[Dimari] BOX HEAD NOT CREATED: no Head bone.",this);return;}
             headToActor=Quaternion.Inverse(head.rotation)*transform.rotation;
+            if(scenePhotoBox!=null)
+            {
+                box=scenePhotoBox;UpdateBox();
+                Debug.Log("[Dimari] Using saved Scene photo box head v4.",this);
+                return;
+            }
             photograph=new Material(shader);photograph.SetTexture("_MainTex",faceTexture);
             sideTexture=new Texture2D(1,1);sideTexture.SetPixel(0,0,new Color(0.18f,0.12f,0.09f));sideTexture.Apply();
             sides=new Material(shader);sides.SetTexture("_MainTex",sideTexture);
