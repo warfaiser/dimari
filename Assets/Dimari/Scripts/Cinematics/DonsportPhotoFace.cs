@@ -11,8 +11,15 @@ namespace Dimari.Cinematics
         public Texture2D faceTexture;
         // Legacy serialized fields retained for scene compatibility; no longer size the head.
         public float photoWidth = 0.22f, forwardOffset = 0.145f, verticalOffset = -0.025f;
-        public Vector3 boxSize = new Vector3(0.44f,0.50f,0.44f);
+        public Vector3 boxSize = new Vector3(0.23f,0.28f,0.24f);
         public float boxCenterAboveHead = 0.08f;
+        [HideInInspector] public int headSizingVersion;
+        public void EnsureNormalHeadSize()
+        {
+            if(headSizingVersion>=1)return;
+            boxSize=new Vector3(0.23f,0.28f,0.24f);
+            headSizingVersion=1;
+        }
         [HideInInspector] public GameObject scenePhotoBox;
         Material photograph, sides;
         Texture2D sideTexture;
@@ -56,6 +63,7 @@ namespace Dimari.Cinematics
         }
         void Start()
         {
+            EnsureNormalHeadSize();
             head=FindHead(transform);
             if(head==null){Debug.LogError("[Dimari] BOX HEAD: Head bone not found on "+name,this);return;}
             headToActor=Quaternion.Inverse(head.rotation)*transform.rotation;
@@ -105,7 +113,7 @@ namespace Dimari.Cinematics
             Quaternion rotation=head.rotation*headToActor;
             box.transform.SetPositionAndRotation(head.position+rotation*new Vector3(0,boxCenterAboveHead,0),rotation);
             // Old photoWidth/offset values cannot shrink this replacement back inside the original head.
-            box.transform.localScale=new Vector3(Mathf.Max(.38f,boxSize.x),Mathf.Max(.44f,boxSize.y),Mathf.Max(.38f,boxSize.z));
+            box.transform.localScale=new Vector3(Mathf.Max(.10f,boxSize.x),Mathf.Max(.12f,boxSize.y),Mathf.Max(.10f,boxSize.z));
             box.SetActive(isActiveAndEnabled&&head.gameObject.activeInHierarchy);
         }
         void LateUpdate(){UpdateBox();}

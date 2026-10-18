@@ -24,7 +24,7 @@ namespace Dimari.Editor
             var story=Object.FindAnyObjectByType<DonsportReceptionCutscene>();
             if(story==null||story.gameObject.scene!=SceneManager.GetActiveScene()||story.maybeBaby==null)return;
             var face=story.maybeBaby.GetComponent<DonsportPhotoFace>();
-            if(face==null||face.scenePhotoBox==null)Build(false);
+            if(face==null||face.scenePhotoBox==null||face.headSizingVersion<1)Build(false);
         }
         [MenuItem("Dimari/Донспорт — создать голову с фото прямо в Scene")]
         public static void Apply(){Build(true);}
@@ -96,11 +96,12 @@ namespace Dimari.Editor
             {
                 var face=actor.GetComponent<DonsportPhotoFace>();if(face==null)face=Undo.AddComponent<DonsportPhotoFace>(actor.gameObject);
                 Undo.RecordObject(face,"Save Scene photo head reference");
+                face.EnsureNormalHeadSize();
                 if(face.scenePhotoBox!=null)Undo.DestroyObjectImmediate(face.scenePhotoBox);
                 var root=new GameObject("MAYBE BABY — SAVED PHOTO BOX HEAD v4");SceneManager.MoveGameObjectToScene(root,actor.gameObject.scene);
                 Undo.RegisterCreatedObjectUndo(root,"Photo box head in Scene");
                 root.transform.SetPositionAndRotation(head.position+actor.rotation*new Vector3(0,face.boxCenterAboveHead,0),actor.rotation);
-                root.transform.localScale=new Vector3(Mathf.Max(.38f,face.boxSize.x),Mathf.Max(.44f,face.boxSize.y),Mathf.Max(.38f,face.boxSize.z));
+                root.transform.localScale=new Vector3(Mathf.Max(.10f,face.boxSize.x),Mathf.Max(.12f,face.boxSize.y),Mathf.Max(.10f,face.boxSize.z));
                 var cube=GameObject.CreatePrimitive(PrimitiveType.Cube);cube.name="Opaque box covering original hair and face";
                 cube.transform.SetParent(root.transform,false);Object.DestroyImmediate(cube.GetComponent<Collider>());
                 cube.GetComponent<Renderer>().sharedMaterial=sides;
