@@ -24,7 +24,7 @@ namespace Dimari.Editor
             var story=Object.FindAnyObjectByType<DonsportReceptionCutscene>();
             if(story==null||story.gameObject.scene!=SceneManager.GetActiveScene()||story.maybeBaby==null)return;
             var face=story.maybeBaby.GetComponent<DonsportPhotoFace>();
-            if(face==null||face.scenePhotoBox==null||face.headSizingVersion<1)Build(false);
+            if(face==null||face.scenePhotoBox==null||face.headSizingVersion<1||!face.originalHeadHidden)Build(false);
         }
         [MenuItem("Dimari/Донспорт — создать голову с фото прямо в Scene")]
         public static void Apply(){Build(true);}
@@ -110,6 +110,8 @@ namespace Dimari.Editor
                 Object.DestroyImmediate(photo.GetComponent<Collider>());photo.GetComponent<Renderer>().sharedMaterial=portrait;
                 foreach(var renderer in root.GetComponentsInChildren<Renderer>())
                 {renderer.shadowCastingMode=UnityEngine.Rendering.ShadowCastingMode.Off;renderer.receiveShadows=false;}
+                Undo.RecordObject(head,"Hide original head inside photo replacement");
+                face.HideOriginalHead();EditorUtility.SetDirty(head);
                 face.scenePhotoBox=root;face.faceMaterial=portrait;face.faceTexture=portrait.GetTexture("_MainTex") as Texture2D;face.enabled=true;
                 EditorUtility.SetDirty(face);AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(root.scene);Undo.CollapseUndoOperations(group);
                 if(report){Selection.activeGameObject=root;SceneView.lastActiveSceneView?.FrameSelected();EditorUtility.DisplayDialog("Готово — видно без Play","Голова-коробка создана прямо в Scene и выделена. Фото находится спереди персонажа. Сохраните сцену Ctrl+S. В игре используется эта же коробка, вторая не создаётся. Отмена: Ctrl+Z.","OK");}

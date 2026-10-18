@@ -21,6 +21,21 @@ namespace Dimari.Cinematics
             headSizingVersion=1;
         }
         [HideInInspector] public GameObject scenePhotoBox;
+        [HideInInspector] public bool originalHeadHidden;
+        [HideInInspector] public Vector3 originalHeadScale = Vector3.one;
+        public void HideOriginalHead()
+        {
+            var bone=FindHead(transform);if(bone==null)return;
+            if(!originalHeadHidden){originalHeadScale=bone.localScale;originalHeadHidden=true;}
+            // The replacement box is a separate scene root: shrinking the source bone
+            // hides its skinned face/hair without shrinking the photograph or the body.
+            bone.localScale=originalHeadScale*0.001f;
+        }
+        void RestoreOriginalHead()
+        {
+            if(!originalHeadHidden)return;
+            var bone=FindHead(transform);if(bone!=null)bone.localScale=originalHeadScale;
+        }
         Material photograph, sides;
         Texture2D sideTexture;
         Mesh mesh;
@@ -70,7 +85,7 @@ namespace Dimari.Cinematics
             // A saved scene box already carries valid material references. Reuse it first.
             if(scenePhotoBox!=null)
             {
-                box=scenePhotoBox;UpdateBox();
+                box=scenePhotoBox;HideOriginalHead();UpdateBox();
                 Debug.Log("[Dimari] Using saved Scene photo box head v4.",this);
                 return;
             }
@@ -104,7 +119,7 @@ namespace Dimari.Cinematics
             box.AddComponent<MeshFilter>().sharedMesh=mesh;
             var renderer=box.AddComponent<MeshRenderer>();renderer.sharedMaterials=new[]{photograph,sides};
             renderer.shadowCastingMode=UnityEngine.Rendering.ShadowCastingMode.Off;renderer.receiveShadows=false;
-            UpdateBox();
+            HideOriginalHead();UpdateBox();
             Debug.Log("[Dimari] PHOTO BOX HEAD v3 created: opaque head cover with portrait. Size="+boxSize,this);
         }
         void UpdateBox()
@@ -116,9 +131,9 @@ namespace Dimari.Cinematics
             box.transform.localScale=new Vector3(Mathf.Max(.10f,boxSize.x),Mathf.Max(.12f,boxSize.y),Mathf.Max(.10f,boxSize.z));
             box.SetActive(isActiveAndEnabled&&head.gameObject.activeInHierarchy);
         }
-        void LateUpdate(){UpdateBox();}
-        void OnDisable(){if(box!=null)box.SetActive(false);}
-        void OnEnable(){if(box!=null)UpdateBox();}
+        void LateUpdate(){if(box!=null)HideOriginalHead();UpdateBox();}
+        void OnDisable(){if(box!=null){box.SetActive(false);RestoreOriginalHead();}}
+        void OnEnable(){if(box!=null){HideOriginalHead();UpdateBox();}}
         void OnDestroy()
         {
             if(box!=null)Destroy(box);if(mesh!=null)Destroy(mesh);
