@@ -1,6 +1,6 @@
 Shader "Dimari/PhotoFaceDepth"
 {
- Properties { _MainTex("Face",2D)="white" {} }
+ Properties { [MainTexture] _MainTex("Face",2D)="white" {} }
  SubShader
  {
   Tags { "Queue"="Geometry+10" "RenderType"="Opaque" }

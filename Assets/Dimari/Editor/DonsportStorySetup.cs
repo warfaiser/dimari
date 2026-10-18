@@ -20,7 +20,9 @@ namespace Dimari.Editor
         {
             if(EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || EditorApplication.isUpdating) return;
             var root=GameObject.Find("Dimari_Donsport");
-            if(root!=null && root.GetComponent<DonsportReceptionCutscene>()==null) Install(false);
+            if(root==null)return;
+            if(root.GetComponent<DonsportReceptionCutscene>()==null) Install(false);
+            else if(root.transform.Find(DonsportGymUpgrade.Stamp)==null) DonsportGymUpgrade.ApplyTo(root,false);
         }
         [MenuItem("Dimari/Донспорт — Елизавета и поиск Мэйби Бэйби")]
         public static void Apply() { Install(true); }
@@ -28,7 +30,7 @@ namespace Dimari.Editor
         {
             if(EditorApplication.isPlayingOrWillChangePlaymode || SceneManager.GetActiveScene().name!="Chapter2_Rogovo")return;
             var building=GameObject.Find("Dimari_Donsport"); if(building==null) { if(report)EditorUtility.DisplayDialog("Донспорт","Сначала постройте Донспорт существующей командой.","OK"); return; }
-            if(building.GetComponent<DonsportReceptionCutscene>()!=null) { if(report)EditorUtility.DisplayDialog("Донспорт","Сцена разговора уже установлена. Дубликаты не созданы.","OK");return; }
+            if(building.GetComponent<DonsportReceptionCutscene>()!=null) { DonsportGymUpgrade.ApplyTo(building,report);return; }
             Transform reception=building.transform.Find("Donsport receptionist");
             if(reception==null) { Debug.LogWarning("[Dimari] В Донспорте отсутствует receptionist: импортируйте бесплатные NPC и постройте клуб. Ничего не заменено.");return; }
             GameObject source=reception.gameObject;
@@ -71,21 +73,17 @@ namespace Dimari.Editor
                         {
                             var material=AssetDatabase.LoadAssetAtPath<Material>(Art+"MaybeBabyFace.mat");
                             if(material==null){material=new Material(shader);material.mainTexture=AssetDatabase.LoadAssetAtPath<Texture2D>(Art+"MaybeBabyFace.png");AssetDatabase.CreateAsset(material,Art+"MaybeBabyFace.mat");}
+                            material.SetTexture("_MainTex",AssetDatabase.LoadAssetAtPath<Texture2D>(Art+"MaybeBabyFace.png"));
+                            EditorUtility.SetDirty(material);
                             face.faceMaterial=material;
+                            face.faceTexture=AssetDatabase.LoadAssetAtPath<Texture2D>(Art+"MaybeBabyFace.png");
                         }
-                        // The photo's cream headband is represented as a fitted accessory on the rig.
-                        var animator=agent.GetComponentInChildren<Animator>();var head=animator!=null&&animator.isHuman?animator.GetBoneTransform(HumanBodyBones.Head):null;
-                        if(head!=null)
-                        {
-                            var band=GameObject.CreatePrimitive(PrimitiveType.Sphere);band.name="Cream headband";UnityEngine.Object.DestroyImmediate(band.GetComponent<Collider>());
-                            band.transform.SetParent(head,false);
-                            band.transform.SetPositionAndRotation(head.position+agent.transform.up*0.13f,agent.transform.rotation);
-                            Vector3 scale=head.lossyScale;band.transform.localScale=new Vector3(0.19f/Mathf.Max(0.001f,Mathf.Abs(scale.x)),0.045f/Mathf.Max(0.001f,Mathf.Abs(scale.y)),0.16f/Mathf.Max(0.001f,Mathf.Abs(scale.z)));
-                        }
+
                     }
                     count++;Physics.SyncTransforms();if(count>=9)break;
                 }
                 if(story.maybeBaby==null||count<4)throw new InvalidOperationException("Нет свободного места в зале. Все изменения отменены.");
+                DonsportGymUpgrade.ApplyTo(building,false);
                 EditorUtility.SetDirty(story);AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(building.scene);Undo.CollapseUndoOperations(group);
                 string message="Разговор Елизаветы: 6 реплик. Посетителей в зале: "+count+". Мэйби Бэйби — среди них. Сохраните Ctrl+S.\nПроекция лица по фото — прототип: проверьте совпадение с головой модели в Play; это не гарантированная точная 3D-копия. Все шесть реплик озвучены Voice_Donsport_0…5; при отсутствии файла остаются субтитры.";
                 Debug.Log("[Dimari] "+message,building);if(report)EditorUtility.DisplayDialog("Донспорт",message,"OK");
