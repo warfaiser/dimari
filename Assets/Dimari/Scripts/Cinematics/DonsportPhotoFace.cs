@@ -1,45 +1,63 @@
 using UnityEngine;
+using UnityEngine.SceneManagement;
+
 namespace Dimari.Cinematics
 {
-    // Photo is projected onto the rigged head surface, not a camera-facing quad.
-    // Prototype fitting: requires visual validation for the particular imported humanoid.
+    // Deliberately flat rectangular photo, requested instead of mesh projection.
     public class DonsportPhotoFace : MonoBehaviour
     {
         public Material faceMaterial;
         public Texture2D faceTexture;
+        public float photoWidth = 0.22f;
+        public float forwardOffset = 0.145f;
+        public float verticalOffset = -0.025f;
         Material runtimeMaterial;
+        Mesh photoMesh;
+        GameObject photo;
         Transform head;
-        readonly System.Collections.Generic.List<SkinnedMeshRenderer> overlays = new System.Collections.Generic.List<SkinnedMeshRenderer>();
-        MaterialPropertyBlock properties;
+        Quaternion headToActor;
         void Start()
         {
-            var animator=GetComponentInChildren<Animator>();
-            if(faceTexture==null)faceTexture=Resources.Load<Texture2D>("DonsportMaybeBabyFace");
-            if(animator==null||!animator.isHuman||faceMaterial==null||faceTexture==null)
-            { Debug.LogWarning("[Dimari] Face overlay skipped: missing rig, material or photo. Original face retained.",this); return; }
-            runtimeMaterial=new Material(faceMaterial);
-            runtimeMaterial.SetTexture("_MainTex",faceTexture);
-            head=animator.GetBoneTransform(HumanBodyBones.Head); if(head==null)return;
-            foreach(var original in GetComponentsInChildren<SkinnedMeshRenderer>())
-            {
-                if(original.sharedMesh==null)continue;
-                var go=new GameObject("Photo face surface"); go.transform.SetParent(original.transform,false);
-                var overlay=go.AddComponent<SkinnedMeshRenderer>();overlay.sharedMesh=original.sharedMesh;
-                overlay.bones=original.bones;overlay.rootBone=original.rootBone;overlay.localBounds=original.localBounds;
-                var materials=new Material[original.sharedMesh.subMeshCount];for(int i=0;i<materials.Length;i++)materials[i]=runtimeMaterial;
-                overlay.sharedMaterials=materials;overlay.shadowCastingMode=UnityEngine.Rendering.ShadowCastingMode.Off;
-                overlays.Add(overlay);
-            }
-            properties=new MaterialPropertyBlock();
+            var animator = GetComponentInChildren<Animator>();
+            if (faceTexture == null) faceTexture = Resources.Load<Texture2D>("DonsportMaybeBabyFace");
+            if (animator == null || !animator.isHuman || faceTexture == null || faceMaterial == null)
+            { Debug.LogWarning("[Dimari] Rectangular photo skipped: missing rig, photo or material.", this); return; }
+            head = animator.GetBoneTransform(HumanBodyBones.Head);
+            if (head == null) return;
+            headToActor = Quaternion.Inverse(head.rotation) * transform.rotation;
+            runtimeMaterial = new Material(faceMaterial);
+            runtimeMaterial.SetTexture("_MainTex", faceTexture);
+            photoMesh = new Mesh { name = "Rectangular head photograph" };
+            photoMesh.vertices = new[] { new Vector3(-0.5f,-0.5f,0), new Vector3(0.5f,-0.5f,0), new Vector3(0.5f,0.5f,0), new Vector3(-0.5f,0.5f,0) };
+            photoMesh.uv = new[] { new Vector2(0,0), new Vector2(1,0), new Vector2(1,1), new Vector2(0,1) };
+            photoMesh.triangles = new[] { 0,2,1,0,3,2 };
+            photoMesh.RecalculateNormals(); photoMesh.RecalculateBounds();
+            // Separate root avoids inherited FBX bone scale/shear; LateUpdate follows the head.
+            photo = new GameObject("Rectangular photograph on head");
+            SceneManager.MoveGameObjectToScene(photo, gameObject.scene);
+            photo.AddComponent<MeshFilter>().sharedMesh = photoMesh;
+            var renderer = photo.AddComponent<MeshRenderer>(); renderer.sharedMaterial = runtimeMaterial;
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            renderer.receiveShadows = false;
+            UpdatePhoto();
         }
-        void OnDisable() { foreach(var overlay in overlays)if(overlay!=null)overlay.enabled=false; }
-        void OnEnable() { foreach(var overlay in overlays)if(overlay!=null)overlay.enabled=true; }
-        void OnDestroy() { if(runtimeMaterial!=null)Destroy(runtimeMaterial); }
-        void LateUpdate()
+        void UpdatePhoto()
         {
-            if(head==null||properties==null)return;
-            properties.SetMatrix("_FaceWorldToLocal",Matrix4x4.TRS(head.position-transform.up*0.025f,Quaternion.LookRotation(transform.forward,transform.up),Vector3.one).inverse);
-            foreach(var overlay in overlays)if(overlay!=null)overlay.SetPropertyBlock(properties);
+            if (photo == null || head == null) return;
+            Quaternion rotation = head.rotation * headToActor;
+            photo.transform.SetPositionAndRotation(head.position + rotation * new Vector3(0,verticalOffset,forwardOffset), rotation);
+            float width = Mathf.Max(0.05f,photoWidth);
+            photo.transform.localScale = new Vector3(width,width * faceTexture.height / (float)faceTexture.width,1);
+            photo.SetActive(isActiveAndEnabled && head.gameObject.activeInHierarchy);
+        }
+        void LateUpdate() { UpdatePhoto(); }
+        void OnDisable() { if (photo != null) photo.SetActive(false); }
+        void OnEnable() { if (photo != null) UpdatePhoto(); }
+        void OnDestroy()
+        {
+            if (photo != null) Destroy(photo);
+            if (runtimeMaterial != null) Destroy(runtimeMaterial);
+            if (photoMesh != null) Destroy(photoMesh);
         }
     }
 }
