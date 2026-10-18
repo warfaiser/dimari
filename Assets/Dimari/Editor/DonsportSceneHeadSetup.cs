@@ -26,24 +26,52 @@ namespace Dimari.Editor
         }
         [MenuItem("Dimari/Донспорт — создать голову с фото прямо в Scene")]
         public static void Apply(){Build(true);}
+        static void Fail(string message,Transform actor,bool report)
+        {
+            Debug.LogError("[Dimari] Scene photo head: "+message,actor);
+            if(report)EditorUtility.DisplayDialog("Голова не создана — точная причина",message,"OK");
+        }
         static void Build(bool report)
         {
             if(EditorApplication.isPlayingOrWillChangePlaymode||SceneManager.GetActiveScene().name!="Chapter2_Rogovo")return;
             var story=Object.FindAnyObjectByType<DonsportReceptionCutscene>();
             if(story==null||story.gameObject.scene!=SceneManager.GetActiveScene()||story.maybeBaby==null)
             {if(report)EditorUtility.DisplayDialog("Голова в Scene","В открытой сцене не найден персонаж Мэйби Бэйби из установленной истории Донспорта.","OK");return;}
-            var actor=story.maybeBaby;var animator=actor.GetComponentInChildren<Animator>();
-            var head=animator!=null&&animator.isHuman?animator.GetBoneTransform(HumanBodyBones.Head):null;
-            var portrait=Resources.Load<Material>("DonsportPhotoBox");
-            if(head==null||portrait==null||portrait.GetTexture("_MainTex")==null)
-            {Debug.LogError("[Dimari] Scene head: missing head bone or DonsportPhotoBox material/texture.",actor);return;}
+            var actor=story.maybeBaby;
+            var head=DonsportPhotoFace.FindHead(actor);
+            if(head==null)
+            {Fail("Не найдена кость Head у "+actor.name+". Материал ещё не проверялся. Пришлите раскрытую иерархию персонажа.",actor,report);return;}
+            const string texturePath="Assets/Dimari/Resources/DonsportMaybeBabyFace.png";
+            const string shaderPath="Assets/Dimari/Art/DonsportStory/PhotoFace.shader";
+            const string materialPath="Assets/Dimari/Resources/DonsportPhotoBox.mat";
+            AssetDatabase.ImportAsset(texturePath,ImportAssetOptions.ForceUpdate);
+            AssetDatabase.ImportAsset(shaderPath,ImportAssetOptions.ForceUpdate);
+            var texture=AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+            if(texture==null)
+            {Fail("Не загружено фото по пути "+texturePath+". Проверьте распаковку Assets в корень проекта.",actor,report);return;}
+            var shader=AssetDatabase.LoadAssetAtPath<Shader>(shaderPath);
+            if(shader==null)
+            {Fail("Не загружен шейдер по пути "+shaderPath+". Пришлите ошибки его импорта из Console.",actor,report);return;}
+            var portrait=AssetDatabase.LoadAssetAtPath<Material>(materialPath);
+            if(portrait==null)
+            {
+                // Preserve an unimportable previous material; create a separate valid asset instead.
+                const string repairedPath="Assets/Dimari/Resources/DonsportPhotoBoxRepaired.mat";
+                portrait=AssetDatabase.LoadAssetAtPath<Material>(repairedPath);
+                if(portrait==null){portrait=new Material(shader);AssetDatabase.CreateAsset(portrait,repairedPath);}
+            }
+            Undo.RecordObject(portrait,"Repair portrait references by actual asset paths");
+            portrait.shader=shader;portrait.SetTexture("_MainTex",texture);EditorUtility.SetDirty(portrait);
+            if(portrait.GetTexture("_MainTex")!=texture)
+            {Fail("Материал не принял фото в _MainTex. Пришлите Inspector материала.",actor,report);return;}
             if(!AssetDatabase.IsValidFolder("Assets/Dimari/Generated"))AssetDatabase.CreateFolder("Assets/Dimari","Generated");
             if(!AssetDatabase.IsValidFolder(Folder))AssetDatabase.CreateFolder("Assets/Dimari/Generated","DonsportPhotoHead");
             // Use saved assets, never transient meshes/materials that disappear after reloading Unity.
             var brown=AssetDatabase.LoadAssetAtPath<Texture2D>(Folder+"/Brown.asset");
             if(brown==null){brown=new Texture2D(1,1);brown.SetPixel(0,0,new Color(.18f,.12f,.09f));brown.Apply();AssetDatabase.CreateAsset(brown,Folder+"/Brown.asset");}
             var sides=AssetDatabase.LoadAssetAtPath<Material>(Folder+"/Sides.mat");
-            if(sides==null){sides=new Material(portrait.shader);sides.SetTexture("_MainTex",brown);AssetDatabase.CreateAsset(sides,Folder+"/Sides.mat");}
+            if(sides==null){sides=new Material(shader);AssetDatabase.CreateAsset(sides,Folder+"/Sides.mat");}
+            Undo.RecordObject(sides,"Repair side material");sides.shader=shader;sides.SetTexture("_MainTex",brown);EditorUtility.SetDirty(sides);
             Undo.IncrementCurrentGroup();int group=Undo.GetCurrentGroup();Undo.SetCurrentGroupName("Visible saved Scene photo head");
             try
             {

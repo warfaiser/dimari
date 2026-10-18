@@ -37,25 +37,40 @@ namespace Dimari.Cinematics
                 face.enabled=true;
             }
         }
+        public static Transform FindHead(Transform actor)
+        {
+            var animator=actor.GetComponentInChildren<Animator>(true);
+            if(animator!=null&&animator.avatar!=null&&animator.avatar.isValid&&animator.isHuman)
+            {
+                var bone=animator.GetBoneTransform(HumanBodyBones.Head);
+                if(bone!=null)return bone;
+            }
+            // Imported rigs can have no usable Humanoid mapping outside Play.
+            foreach(var bone in actor.GetComponentsInChildren<Transform>(true))
+            {
+                string name=bone.name.ToLowerInvariant();
+                int separator=name.LastIndexOf(':');if(separator>=0)name=name.Substring(separator+1);
+                if(name=="head"||name=="bip001 head"||name=="bip01 head"||name=="mixamorig_head")return bone;
+            }
+            return null;
+        }
         void Start()
         {
-            var animator=GetComponentInChildren<Animator>();
-            // Always prefer the shipped portrait, not a stale scene material texture.
-            var bundled=Resources.Load<Texture2D>("DonsportMaybeBabyFace");
-            if(bundled!=null)faceTexture=bundled;
-            var bundledMaterial=Resources.Load<Material>("DonsportPhotoBox");
-            var shader=bundledMaterial!=null?bundledMaterial.shader:(faceMaterial!=null?faceMaterial.shader:Shader.Find("Dimari/PhotoFaceDepth"));
-            if(animator==null||!animator.isHuman||faceTexture==null||shader==null)
-            { Debug.LogError("[Dimari] BOX HEAD NOT CREATED: missing Humanoid, portrait or PhotoFaceDepth shader.",this);return; }
-            head=animator.GetBoneTransform(HumanBodyBones.Head);
-            if(head==null){Debug.LogError("[Dimari] BOX HEAD NOT CREATED: no Head bone.",this);return;}
+            head=FindHead(transform);
+            if(head==null){Debug.LogError("[Dimari] BOX HEAD: Head bone not found on "+name,this);return;}
             headToActor=Quaternion.Inverse(head.rotation)*transform.rotation;
+            // A saved scene box already carries valid material references. Reuse it first.
             if(scenePhotoBox!=null)
             {
                 box=scenePhotoBox;UpdateBox();
                 Debug.Log("[Dimari] Using saved Scene photo box head v4.",this);
                 return;
             }
+            if(faceTexture==null)faceTexture=Resources.Load<Texture2D>("DonsportMaybeBabyFace");
+            var bundledMaterial=Resources.Load<Material>("DonsportPhotoBox");
+            var shader=faceMaterial!=null?faceMaterial.shader:(bundledMaterial!=null?bundledMaterial.shader:Shader.Find("Dimari/PhotoFaceDepth"));
+            if(faceTexture==null||shader==null)
+            { Debug.LogError("[Dimari] BOX HEAD: missing portrait texture or shader. Run the Scene head setup command.",this);return; }
             photograph=new Material(shader);photograph.SetTexture("_MainTex",faceTexture);
             sideTexture=new Texture2D(1,1);sideTexture.SetPixel(0,0,new Color(0.18f,0.12f,0.09f));sideTexture.Apply();
             sides=new Material(shader);sides.SetTexture("_MainTex",sideTexture);
