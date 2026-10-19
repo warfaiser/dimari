@@ -58,21 +58,9 @@ namespace Dimari.Cinematics
                 return;
             }
             ClearPrompt();
-            var find = Step(story, "city_maybe_baby");
-            if (find != null && !find.isCompleted && maybeBaby != null)
-            {
-                Vector3 p = transform.InverseTransformPoint(player.transform.position);
-                Vector3 target = maybeBaby.position + Vector3.up * 1.5f;
-                Vector3 delta = target - (player.transform.position + Vector3.up * 1.5f);
-                if (p.z > 2.4f && delta.magnitude < 3f)
-                {
-                    bool blocked = Physics.Linecast(player.transform.position + Vector3.up * 1.5f, target, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore);
-                    if (!blocked || hit.transform.IsChildOf(maybeBaby)) Found(find);
-                }
-            }
+            // Разговор с Мэйби Бэйби ведёт DonsportMaybeBabyCutscene: он
+            // запускается сам, когда игрок подходит к певице.
         }
-        void Found(StoryQuestManager.QuestStep find)
-        { find.isCompleted = true; story.ShowStatusToast("Вы нашли Мэйби Бэйби. Её разговор будет добавлен следующим этапом."); }
         void ClearPrompt() { if (prompted && story != null) story.SetInteractionPrompt(""); prompted = false; }
         public void ReplayForPreview()
         {
@@ -161,6 +149,7 @@ namespace Dimari.Cinematics
                     new GUIStyle(GUI.skin.box) { fontSize = Mathf.Clamp(Screen.height/40,18,28), wordWrap = true, alignment = TextAnchor.MiddleCenter });
                 return;
             }
+            if (DonsportMaybeBabyCutscene.IsRunning) return;
             var find = Step(story, "city_maybe_baby");
             if (find == null || find.isCompleted || maybeBaby == null || player == null || !player.IsControlEnabled || Camera.main == null) return;
             Vector3 local = transform.InverseTransformPoint(player.transform.position);

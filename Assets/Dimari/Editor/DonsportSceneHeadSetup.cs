@@ -113,7 +113,9 @@ namespace Dimari.Editor
                 Undo.RecordObject(head,"Hide original head inside photo replacement");
                 face.HideOriginalHead();EditorUtility.SetDirty(head);
                 face.scenePhotoBox=root;face.faceMaterial=portrait;face.faceTexture=portrait.GetTexture("_MainTex") as Texture2D;face.enabled=true;
-                EditorUtility.SetDirty(face);AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(root.scene);Undo.CollapseUndoOperations(group);
+                EditorUtility.SetDirty(face);
+                DonsportMaybeBabySetup.Ensure(story,false);
+                AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(root.scene);Undo.CollapseUndoOperations(group);
                 if(report){Selection.activeGameObject=root;SceneView.lastActiveSceneView?.FrameSelected();EditorUtility.DisplayDialog("Готово — видно без Play","Голова-коробка создана прямо в Scene и выделена. Фото находится спереди персонажа. Сохраните сцену Ctrl+S. В игре используется эта же коробка, вторая не создаётся. Отмена: Ctrl+Z.","OK");}
                 Debug.Log("[Dimari] SAVED SCENE PHOTO HEAD v4 created. Save scene with Ctrl+S.",root);
             }

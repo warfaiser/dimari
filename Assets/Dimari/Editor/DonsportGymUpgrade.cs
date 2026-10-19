@@ -80,6 +80,7 @@ namespace Dimari.Editor
                     exercise.phase=station*0.73f;exercise.enabled=true;EditorUtility.SetDirty(exercise);station++;
                 }
                 if(root.transform.Find(Stamp)==null){var stamp=new GameObject(Stamp);stamp.transform.SetParent(root.transform,false);Undo.RegisterCreatedObjectUndo(stamp,"Gym upgrade stamp");}
+                DonsportMaybeBabySetup.Ensure(story,false);
                 AssetDatabase.SaveAssets();EditorSceneManager.MarkSceneDirty(root.scene);Physics.SyncTransforms();Undo.CollapseUndoOperations(group);
                 string message="Фото лица переназначено; белый аксессуар удалён.\nДорожки: "+runners+", гантели на скамье: "+curls+", разминка: "+stretch
                     +".\nСохраните Ctrl+S. Проверьте лицо и упражнения в Play. Это процедурные движения существующих моделей, не motion capture. Мэйби Бэйби остаётся доступной для подхода.";

@@ -3050,7 +3050,8 @@ namespace Dimari.Story
 
         public void SaveGame()
         {
-            if (Dimari.Cinematics.PizzaSellerCutscene.IsRunning || Dimari.Cinematics.DonsportReceptionCutscene.IsRunning)
+            if (Dimari.Cinematics.PizzaSellerCutscene.IsRunning || Dimari.Cinematics.DonsportReceptionCutscene.IsRunning
+                || Dimari.Cinematics.DonsportMaybeBabyCutscene.IsRunning)
             { ShowStatusToast("Сохранитесь после окончания разговора."); return; }
             int cityStage = 0;
             foreach (QuestStep step in questSteps)
@@ -3137,6 +3138,8 @@ namespace Dimari.Story
                     if (cityStage >= 2) questSteps.Add(new QuestStep { id = "city_donsport", title = "Поехать в спортивный зал «Донспорт» и расспросить о Димарике.", isCompleted = PlayerPrefs.GetInt("Dimari_Save_Quest_city_donsport", 0) == 1 });
                     if (cityStage >= 2 && PlayerPrefs.GetInt("Dimari_Save_Quest_city_donsport", 0) == 1)
                         questSteps.Add(new QuestStep { id = "city_maybe_baby", title = "Найти Мэйби Бэйби среди посетителей тренажёрного зала Донспорта.", isCompleted = PlayerPrefs.GetInt("Dimari_Save_Quest_city_maybe_baby", 0) == 1 });
+                    if (PlayerPrefs.GetInt("Dimari_Save_Quest_city_maybe_baby", 0) == 1)
+                        questSteps.Add(new QuestStep { id = "city_avtorusal", title = "Поехать в «Авторусь»: Димарик хотел купить Changan UNI-V.", isCompleted = PlayerPrefs.GetInt("Dimari_Save_Quest_city_avtorusal", 0) == 1 });
                     Dimari.Cinematics.OfficeFishCutscene.Completed = true;
                 }
             }
