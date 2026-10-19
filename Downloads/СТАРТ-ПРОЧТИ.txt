@@ -1,0 +1,30 @@
+ИСПРАВЛЕНИЕ ОШИБКИ CS0102 "already contains a definition for 'HasGameStarted'"
+
+В архиве лежит ТОЛЬКО ОДИН файл:
+  Assets/Dimari/Scripts/Story/StoryQuestManager.cs
+
+Порядок:
+1. Закрой Unity (полностью, не только Play).
+2. Распакуй архив в КОРЕНЬ проекта папки dimari (там, где лежат папки Assets, ProjectSettings).
+   Разреши замену файла.
+3. Открой Unity и дождись окончания импорта.
+4. В Unity нажми Ctrl+R (Assets > Refresh) — начнётся перекомпиляция.
+5. Нажми в Console "Clear". Красных ошибок быть не должно.
+
+ПРОВЕРКА, ЧТО ФАЙЛ ДЕЙСТВИТЕЛЬНО ЗАМЕНИЛСЯ:
+Открой Assets/Dimari/Scripts/Story/StoryQuestManager.cs (двойной клик),
+нажми Ctrl+F и найди "HasGameStarted".
+Должно быть РОВНО ОДНО совпадение, на строке 99.
+Если совпадений два и второе на строке 104 — файл не заменился:
+значит архив распакован не в ту папку или выбран "Пропустить".
+
+Как выглядит ПРАВИЛЬНЫЙ фрагмент (строки 98-103):
+        public bool IsMenuOpen => _isMenuOpen;
+        public bool HasGameStarted => _hasGameStarted;
+        public bool IsTabletViewerOpen => _isTabletViewerOpen;
+        public bool IsHudVisible => _showHUD;
+        /// <summary>Frame in which the normal ESC handler ran; ...</summary>
+        public static int LastMenuHotkeyFrame { get; private set; } = -1;
+
+ВНИМАНИЕ: строка "public bool HasGameStarted => _hasGameStarted;" не должна
+повторяться ниже. Раньше там стояла вторая копия — именно она и давала CS0102.
