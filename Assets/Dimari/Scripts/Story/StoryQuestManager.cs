@@ -586,6 +586,18 @@ namespace Dimari.Story
             {
                 Vector3 seaPosition = root.TransformPoint(shipOffsetFromCliff);
                 seaPosition.y = oceanLevel;
+                // The offset is a suggestion. If it lands on the island (or outside the generated
+                // sea), the ship is moved to the nearest real water cell so the sailing cutscene works.
+                if (!IsInsideOcean(seaPosition))
+                {
+                    if (FindOpenSeaNear(seaPosition, 600f, out Vector3 openSea))
+                    {
+                        Debug.LogWarning("[Dimari] Точка корабля по смещению была не на воде; корабль перенесён на ближайшую воду: "
+                            + seaPosition.ToString("F1") + " → " + openSea.ToString("F1"));
+                        seaPosition = openSea;
+                    }
+                    else Debug.LogWarning("[Dimari] Рядом с причалом нет воды: проверьте Ocean Level, Bay Size и точку обрыва.");
+                }
                 shipObj.transform.position = seaPosition;
             }
 
@@ -603,11 +615,8 @@ namespace Dimari.Story
             // 4. NPC-ПЕРСОНАЖ (Капитан / Проводник), ожидающий у трапа корабля на конце причала
             GameObject npcObj = new GameObject("Dimari_ShipCaptain_NPC");
             npcObj.transform.SetParent(shipObj.transform, false);
-            PositionCaptainAtHelm(npcObj.transform, shipObj.transform);
-
-            SpawnNpcCharacterAtShip(npcObj.transform);
-            _npcTransform = npcObj.transform;
-            _captainAnimator = npcObj.GetComponentInChildren<Animator>();
+            // The helm must be known first: the captain belongs at the wheel, not at a
+            // serialized fitted position that can be inside the cabin of another ship model.
             foreach (Transform part in shipObj.GetComponentsInChildren<Transform>(true))
             {
                 string partName = part.name.ToLowerInvariant();
@@ -616,6 +625,11 @@ namespace Dimari.Story
                 if (_captainWheel == null && (partName.Contains("wheel") || partName.Contains("steering") || partName == "helm"))
                     _captainWheel = part;
             }
+            PositionCaptainAtHelm(npcObj.transform, shipObj.transform);
+
+            SpawnNpcCharacterAtShip(npcObj.transform);
+            _npcTransform = npcObj.transform;
+            _captainAnimator = npcObj.GetComponentInChildren<Animator>();
 
             BoxCollider triggerCol = root.gameObject.AddComponent<BoxCollider>();
             triggerCol.center = new Vector3(0f, 1.0f, 0.5f);
@@ -961,6 +975,29 @@ namespace Dimari.Story
 
         private void PositionCaptainAtHelm(Transform captain, Transform ship)
         {
+            // A real helm always wins over the fitted placeholder: the placeholder was measured
+            // on the Sky Protective Suit / pirate-ship pair and lands inside other models.
+            if (_captainWheel != null && _shipDeckMeasured)
+            {
+                Vector3 wheelLocal = ship.InverseTransformPoint(_captainWheel.position);
+                Renderer wheelRenderer = _captainWheel.GetComponentInChildren<Renderer>();
+                if (wheelRenderer != null) wheelLocal = ship.InverseTransformPoint(wheelRenderer.bounds.center);
+                Vector3 fitted = fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f);
+                bool fittedIsFarFromWheel = (ship.TransformPoint(fitted) - _captainWheel.position).sqrMagnitude > 6.25f;
+                if (!useFittedCaptainPlacement || fittedIsFarFromWheel)
+                {
+                    // Stand just aft of the wheel, where a helmsman stands.
+                    Vector3 aft = wheelLocal + ship.InverseTransformDirection(-ship.forward) * 0.45f;
+                    if (Mathf.Abs(DeckLocalYAt(aft) - DeckLocalYAt(wheelLocal)) > 0.6f) aft = wheelLocal;
+                    aft.y = DeckLocalYAt(aft) + 0.02f;
+                    captain.localPosition = aft;
+                    captain.localRotation = Quaternion.Euler(captainFacingEuler);
+                    captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
+                    Debug.Log("[Dimari] Капитан поставлен к штурвалу: локально " + aft.ToString("F2")
+                        + " (прежняя расчётная точка " + fitted.ToString("F2") + " отклонена).", this);
+                    return;
+                }
+            }
             if (useFittedCaptainPlacement)
             {
                 captain.localPosition = fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f);
@@ -2057,6 +2094,13 @@ namespace Dimari.Story
             Vector3 right = _npcTransform.right;
             Vector3 leftGrip = _wheelLeftGrip != null ? _wheelLeftGrip.position : wheelCenter - right * 0.27f;
             Vector3 rightGrip = _wheelRightGrip != null ? _wheelRightGrip.position : wheelCenter + right * 0.27f;
+            // A wheel on another deck would stretch the arms over the head: do not pose then.
+            float armSpan = 0f;
+            Transform upperProbe = _captainAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+            Transform handProbe = _captainAnimator.GetBoneTransform(HumanBodyBones.RightHand);
+            if (upperProbe != null && handProbe != null) armSpan = Vector3.Distance(upperProbe.position, handProbe.position) * 1.9f;
+            if (armSpan > 0.1f && Vector3.Distance(_npcTransform.position + Vector3.up * 1.2f, wheelCenter) > armSpan)
+                return;
             PoseCaptainArm(HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand, leftGrip, -right);
             PoseCaptainArm(HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand, rightGrip, right);
             if (_captainConversationActive && _player != null)
@@ -3079,6 +3123,55 @@ namespace Dimari.Story
             return false;
         }
 
+        /// <summary>Nearest generated sea cell centre, so ships never stand on the island.</summary>
+        private bool FindOpenSeaNear(Vector3 near, float maxDistance, out Vector3 result)
+        {
+            result = near;
+            if (_seaCells == null || cliffArrivalPoint == null) return false;
+            int columns = _seaCells.GetLength(0), rows = _seaCells.GetLength(1);
+            float dx = _seaWidth / columns, dz = _seaLength / rows;
+            Quaternion rotation = BayRotation();
+            Vector3 origin = cliffArrivalPoint.position; origin.y = oceanLevel;
+            float best = float.PositiveInfinity;
+            for (int x = 0; x < columns; x++)
+                for (int z = 0; z < rows; z++)
+                {
+                    if (!_seaCells[x, z]) continue;
+                    Vector3 point = origin + rotation * new Vector3(
+                        -_seaWidth * 0.5f + (x + 0.5f) * dx, 0f, bayStartFromCliff + (z + 0.5f) * dz);
+                    float distance = Vector3.Distance(point, near);
+                    if (distance >= best || distance > maxDistance) continue;
+                    best = distance;
+                    result = point;
+                }
+            return best < float.PositiveInfinity;
+        }
+
+        /// <summary>Plain open-sea route used when the strict corridor search finds nothing.</summary>
+        private bool TrySimpleSeaRoute(out Vector3 start, out Vector3 end)
+        {
+            start = end = _shipTransform != null ? _shipTransform.position : cliffArrivalPoint.position;
+            if (cliffArrivalPoint == null) return false;
+            if (!IsInsideOcean(start) && !FindOpenSeaNear(start, 600f, out start)) return false;
+            start.y = oceanLevel;
+            Vector3 direction = sailingDestination != null
+                ? Vector3.ProjectOnPlane(sailingDestination.position - start, Vector3.up)
+                : Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up);
+            if (direction.sqrMagnitude < 0.01f) direction = Vector3.forward;
+            direction.Normalize();
+            float length = Mathf.Clamp(sailingDistance, 40f, Mathf.Max(40f, oceanSize * 0.25f));
+            Vector3 candidate = start + direction * length;
+            candidate.y = oceanLevel;
+            if (!IsInsideOcean(candidate))
+            {
+                if (!FindOpenSeaNear(candidate, 700f, out candidate)) return false;
+            }
+            candidate.y = oceanLevel;
+            if ((candidate - start).sqrMagnitude < 400f) return false;
+            end = candidate;
+            return true;
+        }
+
         private Quaternion BayRotation()
         {
             return Quaternion.Euler(0f, cliffArrivalPoint != null ? cliffArrivalPoint.eulerAngles.y : 0f, 0f);
@@ -3103,9 +3196,17 @@ namespace Dimari.Story
             Physics.SyncTransforms();
             if (!TryFindOpenWaterVoyage(out Vector3 seaStart, out Vector3 seaEnd))
             {
-                Debug.LogWarning("[Dimari] Безопасный морской коридор не найден. Плавание отменено: проверьте Ocean Size, уровень воды и Sailing Destination.");
-                ShowStatusToast("Для плавания нужен свободный участок моря.");
-                yield break;
+                if (TrySimpleSeaRoute(out seaStart, out seaEnd))
+                {
+                    Debug.LogWarning("[Dimari] Строгий коридор не найден; используется простой морской маршрут "
+                        + seaStart.ToString("F1") + " → " + seaEnd.ToString("F1") + ". Плавание к Рогово состоится.");
+                }
+                else
+                {
+                    Debug.LogWarning("[Dimari] Морской маршрут не найден. Плавание отменено: проверьте Ocean Size, уровень воды и Sailing Destination.");
+                    ShowStatusToast("Для плавания нужен свободный участок моря.");
+                    yield break;
+                }
             }
             float fadeTime = 0f;
             while (fadeTime < 0.6f)
@@ -3237,6 +3338,23 @@ namespace Dimari.Story
             }
             Vector3 heroHead = _player.transform.position + Vector3.up * 1.5f;
             Vector3 captainHead = _npcTransform.position + Vector3.up * 1.5f;
+            // Inside a cabin the wide shot would put the camera through a wall or the ceiling.
+            // Use a close profile shot in front of the speaker instead.
+            bool cramped = Physics.Raycast(captainHead, Vector3.up, out RaycastHit headroom, 2f, ~0, QueryTriggerInteraction.Ignore)
+                && !headroom.transform.IsChildOf(_npcTransform) && !headroom.transform.IsChildOf(_player.transform);
+            if (cramped)
+            {
+                Vector3 face = captainSpeaking ? captainHead : heroHead;
+                Vector3 listener = captainSpeaking ? heroHead : captainHead;
+                Vector3 toListener = Vector3.ProjectOnPlane(listener - face, Vector3.up);
+                if (toListener.sqrMagnitude < 0.01f) toListener = _shipTransform.forward;
+                toListener.Normalize();
+                Vector3 profileSide = Vector3.Cross(Vector3.up, toListener).normalized;
+                Vector3 close = face + toListener * 0.85f + profileSide * 0.35f - Vector3.up * 0.06f;
+                close = SafeCutsceneCamera(face, close, _player.transform, _npcTransform);
+                _mainCam.transform.SetPositionAndRotation(close, Quaternion.LookRotation(face - close));
+                return;
+            }
             Vector3 direction = Vector3.ProjectOnPlane(captainHead - heroHead, Vector3.up);
             if (direction.sqrMagnitude < 0.01f) direction = _shipTransform.forward;
             direction.Normalize();
