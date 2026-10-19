@@ -3655,6 +3655,17 @@ namespace Dimari.Story
             const string answer = "Слышь, сухопутная крыса, ты на необитаемом острове! И скажу я тебе по-честному: повезло тебе, что старый морской волк бросил тут свой якорь. Прыгай на борт — и мы с тобой доплывём до города, чтоб меня черти драли!";
             yield return CaptainDialogueLine("Герой: " + question, heroCaptainQuestion, 7f, false, meetingLocal);
             yield return CaptainDialogueLine("Капитан: " + answer, pirateCaptainAnswer, 19f, true, meetingLocal);
+            // После разговора капитан снова смотрит по курсу, к штурвалу.
+            if (_npcTransform != null)
+            {
+                _npcTransform.localRotation = Quaternion.Euler(captainFacingEuler);
+                if (_captainWheel != null)
+                {
+                    Vector3 face = Vector3.ProjectOnPlane(_captainWheel.position - _npcTransform.position, Vector3.up);
+                    if (face.sqrMagnitude > 0.01f)
+                        _npcTransform.rotation = Quaternion.LookRotation(face.normalized, Vector3.up);
+                }
+            }
         }
 
         /// <summary>
@@ -4215,6 +4226,13 @@ namespace Dimari.Story
                 Vector3 toCaptain = Vector3.ProjectOnPlane(_npcTransform.position - _player.transform.position, _shipTransform.up);
                 if (toCaptain.sqrMagnitude > 0.001f)
                     _player.transform.rotation = Quaternion.LookRotation(toCaptain, _shipTransform.up);
+                // Капитан поворачивается к герою: разговор идёт лицом к лицу, а не в затылок.
+                if (!_isSailing)
+                {
+                    Vector3 toHero = Vector3.ProjectOnPlane(_player.transform.position - _npcTransform.position, _shipTransform.up);
+                    if (toHero.sqrMagnitude > 0.001f)
+                        _npcTransform.rotation = Quaternion.LookRotation(toHero, _shipTransform.up);
+                }
                 FrameCaptainConversation(captainSpeaking);
                 yield return null;
             }
@@ -4240,33 +4258,113 @@ namespace Dimari.Story
             }
             Vector3 heroHead = _player.transform.position + Vector3.up * 1.5f;
             Vector3 captainHead = _npcTransform.position + Vector3.up * 1.5f;
-            // Inside a cabin the wide shot would put the camera through a wall or the ceiling.
-            // Use a close profile shot in front of the speaker instead.
-            bool cramped = Physics.Raycast(captainHead, Vector3.up, out RaycastHit headroom, 2f, ~0, QueryTriggerInteraction.Ignore)
-                && !headroom.transform.IsChildOf(_npcTransform) && !headroom.transform.IsChildOf(_player.transform);
-            if (cramped)
+
+            // Основной кадр — камера на палубе, на уровне глаз, между героем и капитаном.
+            // Она не может оказаться внутри паруса или корпуса: точка ограничена палубой,
+            // а линия взгляда проверяется по коллайдерам корабля.
+            if (TryDeckConversationCamera(out Vector3 deckCamera, out Vector3 deckLook))
             {
-                Vector3 face = captainSpeaking ? captainHead : heroHead;
-                Vector3 listener = captainSpeaking ? heroHead : captainHead;
-                Vector3 toListener = Vector3.ProjectOnPlane(listener - face, Vector3.up);
-                if (toListener.sqrMagnitude < 0.01f) toListener = _shipTransform.forward;
-                toListener.Normalize();
-                Vector3 profileSide = Vector3.Cross(Vector3.up, toListener).normalized;
-                Vector3 close = face + toListener * 0.85f + profileSide * 0.35f - Vector3.up * 0.06f;
-                close = SafeCutsceneCamera(face, close, _player.transform, _npcTransform);
-                _mainCam.transform.SetPositionAndRotation(close, Quaternion.LookRotation(face - close));
+                _mainCam.transform.SetPositionAndRotation(deckCamera, Quaternion.LookRotation(deckLook - deckCamera));
                 return;
             }
-            Vector3 direction = Vector3.ProjectOnPlane(captainHead - heroHead, Vector3.up);
-            if (direction.sqrMagnitude < 0.01f) direction = _shipTransform.forward;
-            direction.Normalize();
-            Vector3 side = Vector3.Cross(Vector3.up, direction).normalized;
-            // A side two-shot: both faces visible, the hero's backpack is not a wall in the lens.
-            Vector3 look = captainSpeaking ? captainHead : heroHead;
-            Vector3 midpoint = (heroHead + captainHead) * 0.5f;
-            Vector3 first = midpoint + side * 1.45f - direction * 0.15f + Vector3.up * 0.05f;
-            Vector3 position = SafeCutsceneCamera(look, first, _player.transform, _npcTransform);
-            _mainCam.transform.SetPositionAndRotation(position, Quaternion.LookRotation(look - position));
+
+            // Запасной кадр — крупный профиль говорящего (нужен только в тесной рубке).
+            Vector3 face = captainSpeaking ? captainHead : heroHead;
+            Vector3 listener = captainSpeaking ? heroHead : captainHead;
+            Vector3 toListener = Vector3.ProjectOnPlane(listener - face, Vector3.up);
+            if (toListener.sqrMagnitude < 0.01f) toListener = _shipTransform.forward;
+            toListener.Normalize();
+            Vector3 profileSide = Vector3.Cross(Vector3.up, toListener).normalized;
+            Vector3 close = face + toListener * 0.95f + profileSide * 0.45f - Vector3.up * 0.06f;
+            close = SafeCutsceneCamera(face, close, _player.transform, _npcTransform);
+            _mainCam.transform.SetPositionAndRotation(close, Quaternion.LookRotation(face - close));
+        }
+
+        /// <summary>
+        /// Кадр разговора на палубе: камера стоит на палубе в 1.5–2.4 м сбоку от пары,
+        /// на высоте глаз, внутри корпуса по ширине и ниже парусов. Выбирается лучший
+        /// вариант из нескольких, у которого обе головы в кадре и нет перекрытий.
+        /// </summary>
+        private bool TryDeckConversationCamera(out Vector3 camera, out Vector3 look)
+        {
+            camera = look = Vector3.zero;
+            if (_player == null || _npcTransform == null || _shipTransform == null) return false;
+
+            Vector3 heroHead = _player.transform.position + Vector3.up * 1.5f;
+            Vector3 captainHead = _npcTransform.position + Vector3.up * 1.5f;
+            look = (heroHead + captainHead) * 0.5f;
+
+            Vector3 heroLocal = _shipTransform.InverseTransformPoint(_player.transform.position);
+            Vector3 captainLocal = _shipTransform.InverseTransformPoint(_npcTransform.position);
+            Vector3 axis = Vector3.ProjectOnPlane(heroLocal - captainLocal, Vector3.up);
+            if (axis.sqrMagnitude < 0.01f) axis = Vector3.ProjectOnPlane(_shipTransform.forward, Vector3.up);
+            if (axis.sqrMagnitude < 0.01f) axis = Vector3.forward;
+            axis.Normalize();
+            Vector3 side = Vector3.Cross(Vector3.up, axis).normalized;
+            Vector3 mid = (heroLocal + captainLocal) * 0.5f;
+            // Высота глаз над палубой, а не над водой: капитан и герой стоят на одной палубе.
+            float eye = Mathf.Max(heroLocal.y, captainLocal.y) + 1.62f;
+
+            Vector3 extents = _measuredShipLocalBounds.extents;
+            float maxX = Mathf.Max(1.4f, extents.x * 0.55f);
+            float maxZ = Mathf.Max(1.4f, extents.z * 0.55f);
+
+            float bestScore = float.MinValue;
+            bool found = false;
+            foreach (float lateral in new[] { 1.7f, 2.1f, 1.4f, 2.5f })
+                foreach (float back in new[] { 0f, 0.7f, -0.7f })
+                    foreach (float sign in new[] { 1f, -1f })
+                    {
+                        Vector3 local = mid + side * lateral * sign + axis * back;
+                        local.x = Mathf.Clamp(local.x, -maxX, maxX);
+                        local.z = Mathf.Clamp(local.z, -maxZ, maxZ);
+                        local.y = eye;
+                        Vector3 point = _shipTransform.TransformPoint(local);
+
+                        if (CameraPointBlocked(point, _player.transform, _npcTransform)) continue;
+                        if (HeadroomAbove(point, 0.9f) < 0.6f) continue;
+                        if (ShipBlocksView(point, heroHead) || ShipBlocksView(point, captainHead)) continue;
+
+                        // Обе головы должны попадать в кадр: угол между направлениями небольшим.
+                        Vector3 toHero = (heroHead - point).normalized;
+                        Vector3 toCaptain = (captainHead - point).normalized;
+                        float spread = Vector3.Angle(toHero, toCaptain);
+                        if (spread > 90f) continue;
+                        float distance = Vector3.Distance(point, look);
+                        float score = -Mathf.Abs(distance - 2.2f) * 2.2f - spread * 0.02f;
+                        if (score <= bestScore) continue;
+                        bestScore = score;
+                        camera = point;
+                        found = true;
+                    }
+
+            if (!found)
+            {
+                // Ни одна точка не подошла: ставим камеру над парой и смотрим вниз.
+                Vector3 above = mid + Vector3.up * 2.4f - axis * 0.4f;
+                Vector3 world = _shipTransform.TransformPoint(above);
+                if (CameraPointBlocked(world, _player.transform, _npcTransform)) return false;
+                camera = world;
+                look = (heroHead + captainHead) * 0.5f;
+                found = true;
+            }
+            return found;
+        }
+
+        /// <summary>Перекрывает ли корпус корабля линию от камеры к цели.</summary>
+        private bool ShipBlocksView(Vector3 from, Vector3 to)
+        {
+            if (_shipTransform == null) return false;
+            foreach (RaycastHit hit in Physics.RaycastAll(from, (to - from).normalized,
+                Vector3.Distance(from, to), ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (_player != null && hit.transform.IsChildOf(_player.transform)) continue;
+                if (_npcTransform != null && hit.transform.IsChildOf(_npcTransform)) continue;
+                if (!hit.transform.IsChildOf(_shipTransform)) continue;
+                if (IsRigging(hit.transform)) continue;
+                return true;
+            }
+            return false;
         }
 
         public void OpenMainMenuOnStartup()
