@@ -514,6 +514,7 @@ namespace Dimari.Story
             // A placeholder saved into the scene in an earlier session would sit next to the
             // real ship forever. Remove it before the pier is built.
             PurgeShipPlaceholderObjects();
+            _descentPath.Clear();
 
             Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
 
