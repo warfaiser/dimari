@@ -43,8 +43,10 @@ namespace Dimari.Story
         public GameObject shipPrefab;
         [Header("Большой корабль и разговор с капитаном")]
         [Min(8.5f)] public float shipModelSize = 28f;
-        [Tooltip("Строить встроенный корабль. Выключите, чтобы использовать префаб из поля Ship Prefab; префабы-заглушки всё равно отклоняются проверкой формы.")]
-        public bool useProceduralShip = true;
+        [Tooltip("Старое поле, оставлено для совместимости со сценой. Больше ни на что не влияет: импортированный корабль используется всегда, если он найден и не является заглушкой.")]
+        public bool useProceduralShip = false;
+        [Tooltip("Принудительно строить встроенный корабль, даже если в проекте есть настоящая модель. Обычно выключено.")]
+        public bool forceBuiltInShip = false;
         public bool humanSizedCaptain = true;
         public AudioClip heroCaptainQuestion;
         public AudioClip pirateCaptainAnswer;
@@ -460,9 +462,8 @@ namespace Dimari.Story
             Vector3 shorePos = cliffArrivalPoint != null ? cliffArrivalPoint.position : GetGroundPoint(pPos + forward * 15.5f, pPos.y);
             if (cliffArrivalPoint != null)
             {
-                // Water is generated along the marker's forward. If the marker points inland,
-                // the bay is culled by terrain and the ship ends up on a strip of grass.
-                EnsureCliffFacesSea();
+                // The marker keeps the rotation it has in the scene: the user placed it at the
+                // cliff edge and the cutscene must happen exactly there.
                 forward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up).normalized;
             }
             if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
@@ -598,7 +599,7 @@ namespace Dimari.Story
                 // sea), the ship is moved to the nearest real water cell so the sailing cutscene works.
                 if (!IsInsideOcean(seaPosition))
                 {
-                    if (FindOpenSeaNear(seaPosition, 600f, out Vector3 openSea))
+                    if (FindOpenSeaNear(seaPosition, 45f, out Vector3 openSea))
                     {
                         Debug.LogWarning("[Dimari] Точка корабля по смещению была не на воде; корабль перенесён на ближайшую воду: "
                             + seaPosition.ToString("F1") + " → " + openSea.ToString("F1"));
@@ -612,6 +613,8 @@ namespace Dimari.Story
             bool spawnedAssetShip = TrySpawnAssetStoreShipPrefab(shipObj.transform);
             if (!spawnedAssetShip)
             {
+                Debug.LogWarning("[Dimari] Корабль из ассетов не найден. Строю встроенный корабль. "
+                    + "Чтобы использовать модель, назначьте её в поле Ship Prefab.", this);
                 CreateDetailedProceduralShip(shipObj.transform);
             }
 
@@ -845,54 +848,6 @@ namespace Dimari.Story
                 if (y > top) top = y;
             }
             return top > float.NegativeInfinity ? top : _measuredDeckLocalY;
-        }
-
-        /// <summary>Rotates the cliff marker toward the side with open water; never toward a hill.</summary>
-        private void EnsureCliffFacesSea()
-        {
-            if (cliffArrivalPoint == null) return;
-            Vector3 origin = cliffArrivalPoint.position;
-            Vector3 currentForward = cliffArrivalPoint.forward;
-            currentForward.y = 0f;
-            if (currentForward.sqrMagnitude < 0.01f) currentForward = Vector3.forward;
-            currentForward.Normalize();
-            float currentScore = ScoreSeaDirection(origin, currentForward);
-            float bestScore = currentScore;
-            Vector3 bestDirection = currentForward;
-            for (int i = 0; i < 24; i++)
-            {
-                Vector3 direction = Quaternion.Euler(0f, i * 15f, 0f) * Vector3.forward;
-                float score = ScoreSeaDirection(origin, direction);
-                if (score > bestScore) { bestScore = score; bestDirection = direction; }
-            }
-            if (bestScore <= currentScore + 0.5f) return;
-            Quaternion previous = cliffArrivalPoint.rotation;
-            cliffArrivalPoint.rotation = Quaternion.LookRotation(bestDirection, Vector3.up);
-            Debug.LogWarning("[Dimari] Точка обрыва смотрела не в море: повёрнута с "
-                + previous.eulerAngles.y.ToString("F0") + "° на " + cliffArrivalPoint.eulerAngles.y.ToString("F0")
-                + "°. Вода, причал и корабль теперь строятся в сторону открытого моря.", this);
-        }
-
-        private float ScoreSeaDirection(Vector3 origin, Vector3 direction)
-        {
-            float score = 0f;
-            float[] distances = { 18f, 30f, 45f, 70f, 110f };
-            foreach (float distance in distances)
-            {
-                Vector3 probe = origin + direction * distance;
-                float top = float.NegativeInfinity;
-                bool terrain = false;
-                foreach (RaycastHit hit in Physics.RaycastAll(probe + Vector3.up * 120f, Vector3.down, 400f, ~0, QueryTriggerInteraction.Ignore))
-                {
-                    if (hit.collider is TerrainCollider) terrain = true;
-                    if (hit.point.y > top) top = hit.point.y;
-                }
-                // No terrain at all below the probe: that is open sea.
-                if (!terrain && top < oceanLevel + 1f) score += 3f + distance * 0.06f;
-                else if (top < origin.y - 8f) score += 0.5f;
-                else score -= 8f;
-            }
-            return score;
         }
 
         /// <summary>Wheel on the open deck wins over a decorative wheel inside the cabin.</summary>
@@ -1190,7 +1145,7 @@ namespace Dimari.Story
         /// </summary>
         private bool TrySpawnAssetStoreShipPrefab(Transform parent)
         {
-            if (useProceduralShip) return false;
+            if (forceBuiltInShip) return false;
             if (shipPrefab != null)
             {
                 // A serialized prefab bypassed the asset search, and StylShip_Box was assigned
@@ -1199,12 +1154,12 @@ namespace Dimari.Story
                 if (ShipModelIsUsable(assigned, out string assignedReason))
                 {
                     PrepareShipModel(assigned);
+                    Debug.Log("[Dimari] Корабль: префаб из поля Ship Prefab — " + assigned.name, this);
                     return true;
                 }
                 Debug.LogWarning("[Dimari] Префаб корабля из поля Ship Prefab отклонён: " + assignedReason
-                    + " Строю встроенный корабль. Поле Ship Prefab можно очистить.", this);
+                    + " Ищу настоящий корабль среди ассетов проекта.", this);
                 Destroy(assigned);
-                return false;
             }
 #if UNITY_EDITOR
             string[] filters = new string[] { "t:Prefab", "t:Model" };
@@ -1329,10 +1284,13 @@ namespace Dimari.Story
             reason = "";
             if (instance == null) { reason = "объект не создан."; return false; }
             if (!instance.activeSelf) instance.SetActive(true);
-            string rootName = instance.name.ToLowerInvariant();
-            if (rootName.Contains("box") || rootName.Contains("collider") || rootName.Contains("proxy") ||
-                rootName.Contains("trigger") || rootName.Contains("volume") || rootName.Contains("placeholder"))
-            { reason = "имя объекта «" + instance.name + "» — заглушка."; return false; }
+            foreach (MeshFilter filter in instance.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (filter.sharedMesh == null) continue;
+                string meshName = filter.sharedMesh.name.ToLowerInvariant().Replace(" ", "").Replace("_", "");
+                if (!meshName.Contains("stylshipbox") && !meshName.Contains("shipbox") && !meshName.Contains("shipcollider")) continue;
+                reason = "меш «" + filter.sharedMesh.name + "» — заглушка из набора."; return false;
+            }
 
             Renderer[] renderers = instance.GetComponentsInChildren<Renderer>(true);
             if (renderers.Length == 0) { reason = "в модели нет видимых деталей."; return false; }
@@ -1343,14 +1301,16 @@ namespace Dimari.Story
             float width = Mathf.Min(size.x, size.z);
             if (length < 2f || width < 0.3f) { reason = "модель слишком маленькая (" + size.ToString("F1") + ")."; return false; }
             if (size.y > length * 0.95f) { reason = "высота больше длины — это коробка, а не корпус (" + size.ToString("F1") + ")."; return false; }
-            if (length / Mathf.Max(0.01f, width) < 1.45f)
+            if (length / Mathf.Max(0.01f, width) < 1.3f)
             { reason = "в плане почти квадрат (" + size.ToString("F1") + "), похоже на коллайдер-заглушку."; return false; }
+            // A low-poly ship is still a ship. Only a primitive-like one-mesh box is rejected;
+            // a cube is already caught by the square footprint above.
             if (renderers.Length == 1)
             {
                 MeshFilter filter = renderers[0].GetComponent<MeshFilter>();
                 int triangles = filter != null && filter.sharedMesh != null ? filter.sharedMesh.triangles.Length / 3 : 0;
-                if (triangles > 0 && triangles < 1500)
-                { reason = "одна простая деталь (" + triangles + " треугольников) — это ящик."; return false; }
+                if (triangles > 0 && triangles < 80)
+                { reason = "одна примитивная деталь (" + triangles + " треугольников) — это ящик."; return false; }
             }
             return true;
         }
@@ -1375,14 +1335,14 @@ namespace Dimari.Story
                 float width = Mathf.Min(size.x, size.z);
                 if (length < 2f || width < 0.3f) { reason = "слишком маленький"; return false; }
                 if (size.y > length * 0.95f) { reason = "высота больше длины — это не корпус"; return false; }
-                if (length / Mathf.Max(0.01f, width) < 1.45f) { reason = "в плане почти квадрат (" + size.ToString("F1") + "), похоже на заглушку"; return false; }
+                if (length / Mathf.Max(0.01f, width) < 1.3f) { reason = "в плане почти квадрат (" + size.ToString("F1") + "), похоже на заглушку"; return false; }
                 int triangles = 0;
                 foreach (MeshFilter filter in probe.GetComponentsInChildren<MeshFilter>(true))
                     if (filter.sharedMesh != null) triangles += filter.sharedMesh.triangles.Length / 3;
                 foreach (SkinnedMeshRenderer skin in probe.GetComponentsInChildren<SkinnedMeshRenderer>(true))
                     if (skin.sharedMesh != null) triangles += skin.sharedMesh.triangles.Length / 3;
-                if (renderers.Length < 2 && triangles < 1500)
-                { reason = "одна простая деталь (" + triangles + " треугольников), похоже на коллайдер"; return false; }
+                if (renderers.Length < 2 && triangles < 80)
+                { reason = "одна примитивная деталь (" + triangles + " треугольников), похоже на коллайдер"; return false; }
                 return true;
             }
             finally
