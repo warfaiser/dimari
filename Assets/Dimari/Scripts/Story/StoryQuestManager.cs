@@ -727,6 +727,18 @@ namespace Dimari.Story
             if (_shoreStartPoint != null) _shoreStartPoint.position = _descentPath[0];
             if (_pierWalkEndPoint != null) _pierWalkEndPoint.position = _descentPath[_descentPath.Count - 1];
 
+            // Диагностика: не окажется ли корабль внутри скалы.
+            Vector3 shipProbe = root.TransformPoint(new Vector3(0f, 0f, Mathf.Max(12f, shipDistanceFromCliff)));
+            float rockTop = float.NegativeInfinity;
+            foreach (RaycastHit hit in Physics.RaycastAll(shipProbe + Vector3.up * 120f, Vector3.down, 300f, ~0, QueryTriggerInteraction.Ignore))
+                if (hit.point.y > rockTop) rockTop = hit.point.y;
+            if (rockTop > _cutsceneWaterLevel + 0.5f)
+                Debug.LogWarning("[Dimari] Под точкой корабля есть рельеф на " + rockTop.ToString("F1")
+                    + " м, а вода на " + _cutsceneWaterLevel.ToString("F1")
+                    + " м. Увеличьте Ship Distance From Cliff или Ship Water Drop Below Cliff.", this);
+            else
+                Debug.Log("[Dimari] Место корабля свободно: рельеф ниже воды (" + rockTop.ToString("F1") + " м).", this);
+
             Debug.Log("[Dimari] Спуск к кораблю: вода на " + _cutsceneWaterLevel.ToString("F1") + " м (обрыв "
                 + cliffArrivalPoint.position.y.ToString("F1") + " м), ступеней " + steps
                 + ", корабль в " + Mathf.Max(12f, shipDistanceFromCliff).ToString("F0") + " м от метки.", this);
