@@ -3558,6 +3558,11 @@ namespace Dimari.Story
                 yield return null;
             }
             Vector3 captainLocal = _shipTransform.InverseTransformPoint(_npcTransform.position);
+            // Направление «к борту» нужно во всех ветках ниже, поэтому считается один раз.
+            Vector3 shipCenter = _measuredShipLocalBounds.center;
+            Vector3 outboard = Vector3.ProjectOnPlane(captainLocal - shipCenter, Vector3.up);
+            if (outboard.sqrMagnitude < 0.25f) outboard = Vector3.forward;
+            outboard.Normalize();
             // Герой встаёт рядом с капитаном у штурвала на открытой палубе.
             // Точка ищется лучом по корпусу, а не по «измеренной» палубе: у моделей
             // со своим масштабом локальная высота палубы может указывать внутрь рубки.
@@ -3565,10 +3570,6 @@ namespace Dimari.Story
             if (TryOpenDeckSpotNear(_shipTransform, _npcTransform.position, 1.25f, out Vector3 crewSpot))
             {
                 meetingLocal = _shipTransform.InverseTransformPoint(crewSpot);
-                Vector3 center = _measuredShipLocalBounds.center;
-                Vector3 outboard = Vector3.ProjectOnPlane(captainLocal - center, Vector3.up);
-                if (outboard.sqrMagnitude < 0.25f) outboard = Vector3.forward;
-                outboard.Normalize();
             }
             else if (autoFitCrewToMeasuredDeck && _shipDeckMeasured)
             {

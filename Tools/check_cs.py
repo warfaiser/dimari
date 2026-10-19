@@ -1,4 +1,4 @@
-import sys, re
+import sys, re, subprocess
 from pathlib import Path
 from tree_sitter import Language, Parser
 import tree_sitter_c_sharp
@@ -68,4 +68,14 @@ def walk(node, kind):
 for arg in sys.argv[1:]:
     check_file(arg)
 for pr in problems: print('PROBLEM:', pr[0], pr[1], pr[2] or '')
+
+# Локальные переменные, использованные вне своего блока, — это CS0103, который
+# tree-sitter не считает синтаксической ошибкой. Проверяем отдельным скриптом.
+scope = Path(__file__).with_name('check_scope.py')
+if scope.exists() and sys.argv[1:]:
+    result = subprocess.run([sys.executable, str(scope)] + sys.argv[1:], capture_output=True, text=True)
+    sys.stdout.write(result.stdout)
+    if result.returncode != 0:
+        sys.exit(1)
+
 sys.exit(1 if problems else 0)
