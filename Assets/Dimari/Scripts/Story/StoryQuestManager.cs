@@ -88,6 +88,7 @@ namespace Dimari.Story
         private float _cutsceneWaterLevel = -55f;
         private float _cliffGapDistance = 38f;
         private float _cliffShipDistance = 44f;
+        private float _voyageWaterLength = 120f;
         private bool _cliffGapFound;
         private readonly List<Vector3> _descentPath = new List<Vector3>();
         private Transform _endingApproachMarker;
@@ -424,6 +425,7 @@ namespace Dimari.Story
             right = Vector3.Cross(Vector3.up, forward).normalized;
 
             ResolveCliffArrivalPoint();
+            ResolveCityScenePath();
 
             GameObject storyRoot = new GameObject("Dimari_StoryObjects_V2");
 
@@ -818,9 +820,8 @@ namespace Dimari.Story
                 + " м впереди метки, вода на " + _cutsceneWaterLevel.ToString("F1") + " м"
                 + (_cliffGapFound ? " (найдено пустое место между скалами)." : " (пустое место не найдено, используется заданное расстояние)."), this);
 
-            // 2. Вода: компактный водоём вокруг корабля с вырезами по рельефу.
-            //    Большая плоскость висела над сушей и перерезала скалы.
-            CreateGapWaterMesh(root, waterMat, drop);
+            // 2. Вода вдоль всего маршрута: и у причала, и там, где корабль плывёт.
+            CreateVoyageWater(root, waterMat, drop);
 
             // 3. Лестница вниз по скале: каждая ступень проходима (BoxCollider).
             int steps = Mathf.Clamp(Mathf.CeilToInt(drop / 0.26f), 6, 64);
@@ -918,71 +919,110 @@ namespace Dimari.Story
         }
 
         /// <summary>
-        /// Вода вокруг корабля: круглый водоём радиусом ~1.4 длины корабля. Ячейки над сушей
-        /// вырезаются, край подрезается на одну ячейку, поэтому вода не наезжает на скалы
-        /// и не висит широкой полосой над островом.
+        /// Вода вдоль всего пути корабля: от стоянки у причала до конца плавания.
+        /// Ячейки над сушей вырезаются, поэтому вода не наезжает на скалы, а корабль
+        /// на всём маршруте остаётся на воде. Заодно измеряется длина свободной воды,
+        /// чтобы плавание не уходило за её край.
         /// </summary>
-        private void CreateGapWaterMesh(Transform root, Material waterMat, float drop)
+        private void CreateVoyageWater(Transform root, Material waterMat, float drop)
         {
-            float radius = Mathf.Clamp(Mathf.Max(8.5f, shipModelSize) * 1.6f, 30f, 140f);
-            float step = 3f;
-            int cells = Mathf.Clamp(Mathf.CeilToInt(radius * 2f / step), 12, 96);
-            step = radius * 2f / cells;
+            float ship = Mathf.Max(8.5f, shipModelSize);
+            float width = Mathf.Clamp(ship * 2.4f, 45f, 220f);
+            float behind = ship * 1.3f;
+            float step = 4f;
+            float maxAhead = Mathf.Clamp(sailingDistance + ship * 2f, 60f, 600f);
+
+            // Сколько воды впереди: идём от корабля и останавливаемся на первой суше.
+            Vector3 localForward = Vector3.ProjectOnPlane(root.forward, Vector3.up).normalized;
+            Vector3 shipWorld = root.TransformPoint(new Vector3(0f, 0f, _cliffShipDistance));
             Physics.SyncTransforms();
-            bool[,] keep = new bool[cells, cells];
-            for (int x = 0; x < cells; x++)
-                for (int z = 0; z < cells; z++)
+            _voyageWaterLength = 0f;
+            for (float ahead = step; ahead <= maxAhead; ahead += step)
+            {
+                bool blocked = false;
+                foreach (float side in new[] { 0f, -width * 0.35f, width * 0.35f })
                 {
-                    float cx = -radius + (x + 0.5f) * step;
-                    float cz = -radius + (z + 0.5f) * step;
-                    if (cx * cx + cz * cz > radius * radius) continue;
-                    Vector3 world = root.TransformPoint(new Vector3(cx, -drop, _cliffShipDistance + cz));
-                    // Вода только там, где над ней нет суши.
+                    Vector3 probe = shipWorld + localForward * ahead + root.right * side;
+                    probe.y = _cutsceneWaterLevel;
+                    if (TerrainAboveWater(probe, _cutsceneWaterLevel - 0.25f)) { blocked = true; break; }
+                }
+                if (blocked) break;
+                _voyageWaterLength = ahead;
+            }
+            if (_voyageWaterLength < ship * 1.5f)
+            {
+                _voyageWaterLength = ship * 1.5f;
+                Debug.LogWarning("[Dimari] Впереди корабля мало свободной воды: плавание будет коротким. "
+                    + "Проверьте направление метки обрыва и рельеф.", root);
+            }
+
+            float aheadLength = _voyageWaterLength + ship * 1.6f;
+            float startZ = _cliffShipDistance - behind;
+            float length = aheadLength + behind;
+            int columns = Mathf.Clamp(Mathf.CeilToInt(width / step), 8, 80);
+            int rows = Mathf.Clamp(Mathf.CeilToInt(length / step), 8, 220);
+            float cellX = width / columns;
+            float cellZ = length / rows;
+
+            bool[,] keep = new bool[columns, rows];
+            float footprint = Mathf.Max(10f, ship * 0.75f);
+            for (int x = 0; x < columns; x++)
+                for (int z = 0; z < rows; z++)
+                {
+                    float localZ = startZ + (z + 0.5f) * cellZ;
+                    Vector3 world = root.TransformPoint(new Vector3(
+                        -width * 0.5f + (x + 0.5f) * cellX, -drop, localZ));
+                    // Под самим кораблём вода есть всегда: иначе он «висит» над вырезанной ячейкой.
+                    if (Mathf.Abs(localZ - _cliffShipDistance) <= footprint) { keep[x, z] = true; continue; }
                     keep[x, z] = !TerrainAboveWater(world, _cutsceneWaterLevel - 0.25f);
                 }
-            // Подрезаем край на одну ячейку: вода не касается скал.
-            bool[,] trimmed = new bool[cells, cells];
-            for (int x = 0; x < cells; x++)
-                for (int z = 0; z < cells; z++)
+
+            // Подрезаем только боковые края: под кораблём и вдоль курса вода остаётся.
+            bool[,] trimmed = new bool[columns, rows];
+            for (int x = 0; x < columns; x++)
+                for (int z = 0; z < rows; z++)
                 {
                     if (!keep[x, z]) continue;
-                    bool edge = x == 0 || z == 0 || x == cells - 1 || z == cells - 1;
-                    if (!edge && keep[x - 1, z] && keep[x + 1, z] && keep[x, z - 1] && keep[x, z + 1]) trimmed[x, z] = true;
+                    bool side = x == 0 || x == columns - 1;
+                    if (!side && keep[x - 1, z] && keep[x + 1, z]) trimmed[x, z] = true;
                 }
+
             var vertices = new List<Vector3>();
             var triangles = new List<int>();
-            for (int x = 0; x < cells; x++)
-                for (int z = 0; z < cells; z++)
+            for (int x = 0; x < columns; x++)
+                for (int z = 0; z < rows; z++)
                 {
                     if (!trimmed[x, z]) continue;
                     int i = vertices.Count;
-                    float x0 = -radius + x * step;
-                    float z0 = -radius + z * step;
-                    vertices.Add(new Vector3(x0, -drop + 0.06f, _cliffShipDistance + z0));
-                    vertices.Add(new Vector3(x0, -drop + 0.06f, _cliffShipDistance + z0 + step));
-                    vertices.Add(new Vector3(x0 + step, -drop + 0.06f, _cliffShipDistance + z0 + step));
-                    vertices.Add(new Vector3(x0 + step, -drop + 0.06f, _cliffShipDistance + z0));
+                    float x0 = -width * 0.5f + x * cellX;
+                    float z0 = startZ + z * cellZ;
+                    vertices.Add(new Vector3(x0, -drop + 0.06f, z0));
+                    vertices.Add(new Vector3(x0, -drop + 0.06f, z0 + cellZ));
+                    vertices.Add(new Vector3(x0 + cellX, -drop + 0.06f, z0 + cellZ));
+                    vertices.Add(new Vector3(x0 + cellX, -drop + 0.06f, z0));
                     triangles.Add(i); triangles.Add(i + 1); triangles.Add(i + 2);
                     triangles.Add(i); triangles.Add(i + 2); triangles.Add(i + 3);
                 }
+
             if (vertices.Count == 0)
             {
-                Debug.LogWarning("[Dimari] В проёме у обрыва нет свободной воды: уменьшите Ship Water Drop Below Cliff "
-                    + "или сдвиньте метку обрыва.", root);
+                Debug.LogWarning("[Dimari] Вода у обрыва не построена: весь проём занят сушей. "
+                    + "Увеличьте Ship Water Drop Below Cliff или сдвиньте метку обрыва.", root);
                 return;
             }
-            var mesh = new Mesh { name = "Dimari_GapWaterWithCutouts", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+
+            var mesh = new Mesh { name = "Dimari_VoyageWater", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
             mesh.SetVertices(vertices);
             mesh.SetTriangles(triangles, 0);
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
-            GameObject water = new GameObject("CutsceneGapWater");
+            GameObject water = new GameObject("Dimari_VoyageWater");
             water.transform.SetParent(root, false);
             water.AddComponent<MeshFilter>().sharedMesh = mesh;
             water.AddComponent<MeshRenderer>().sharedMaterial = waterMat;
-            Debug.Log("[Dimari] Вода в проёме: " + (vertices.Count / 4) + " ячеек из " + (cells * cells)
-                + ", радиус " + radius.ToString("F0") + " м вокруг корабля, вырезано над сушей "
-                + (cells * cells - vertices.Count / 4) + ".", water);
+            Debug.Log("[Dimari] Вода маршрута: " + (vertices.Count / 4) + " ячеек, ширина "
+                + width.ToString("F0") + " м, свободно впереди " + _voyageWaterLength.ToString("F0")
+                + " м, вырезано над сушей " + (columns * rows - vertices.Count / 4) + ".", water);
         }
 
         /// <summary>Есть ли над точкой суша выше уровня воды.</summary>
@@ -3333,10 +3373,9 @@ namespace Dimari.Story
 
             _captainConversationActive = false;
             _isPlayingEndingCutscene = false;
-            if (!string.IsNullOrWhiteSpace(cityScenePath))
-                yield return ArriveInCity();
-            else
-                ShowStatusToast("Разговор завершён. Назначьте сцену города через меню Dimari.");
+            // Глава 2 должна начаться сразу после разговоров на корабле.
+            ResolveCityScenePath();
+            yield return ArriveInCity();
             SaveGame();
         }
 
@@ -3617,12 +3656,116 @@ namespace Dimari.Story
             yield return CaptainDialogueLine("Капитан: " + answer, pirateCaptainAnswer, 19f, true, meetingLocal);
         }
 
+        /// <summary>
+        /// Находит сцену города: сначала поле City Scene Path, затем Build Settings, затем
+        /// скачанные сцены Demo City в проекте (и добавляет её в Build Settings).
+        /// Без этого после плавания глава 2 никогда не загружалась.
+        /// </summary>
+        private void ResolveCityScenePath()
+        {
+            if (!string.IsNullOrWhiteSpace(cityScenePath) && Application.CanStreamedLevelBeLoaded(cityScenePath)) return;
+#if UNITY_EDITOR
+            string active = gameObject.scene.path;
+            string best = null;
+            foreach (UnityEditor.EditorBuildSettingsScene scene in UnityEditor.EditorBuildSettings.scenes)
+            {
+                if (scene == null || !scene.enabled || string.IsNullOrEmpty(scene.path)) continue;
+                if (scene.path == active) continue;
+                if (!LooksLikeCityScene(scene.path)) continue;
+                best = scene.path;
+                break;
+            }
+            if (best == null)
+            {
+                foreach (string guid in UnityEditor.AssetDatabase.FindAssets("t:Scene"))
+                {
+                    string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(path) || path == active) continue;
+                    if (!LooksLikeCityScene(path)) continue;
+                    best = path;
+                    break;
+                }
+                if (best != null)
+                {
+                    var scenes = new List<UnityEditor.EditorBuildSettingsScene>(UnityEditor.EditorBuildSettings.scenes);
+                    scenes.Add(new UnityEditor.EditorBuildSettingsScene(best, true));
+                    UnityEditor.EditorBuildSettings.scenes = scenes.ToArray();
+                    Debug.Log("[Dimari] Сцена города добавлена в Build Settings: " + best, this);
+                }
+            }
+            if (best != null)
+            {
+                cityScenePath = best;
+                Debug.Log("[Dimari] Сцена города для главы 2: " + best, this);
+                return;
+            }
+            Debug.LogWarning("[Dimari] Сцена города не найдена. Импортируйте Demo City и добавьте её в Build Settings.", this);
+#endif
+        }
+
+        private static bool LooksLikeCityScene(string path)
+        {
+            string name = System.IO.Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+            if (name.Contains("forest") || name.Contains("chapter1") || name.Contains("donsport"))
+                return false;
+            return name.Contains("city") || name.Contains("demo") || name.Contains("rogovo") ||
+                   name.Contains("рогово") || name.Contains("chapter2") || name.Contains("town");
+        }
+
+        /// <summary>Безопасная точка на земле города, если CityArrivalPoint не расставлен.</summary>
+        private bool TryCreateCityArrivalPoint(Scene city, out Vector3 position, out Quaternion rotation)
+        {
+            position = Vector3.zero;
+            rotation = Quaternion.identity;
+            Vector3 sum = Vector3.zero;
+            int count = 0;
+            Bounds bounds = new Bounds(Vector3.zero, Vector3.zero);
+            bool hasBounds = false;
+            foreach (GameObject root in city.GetRootGameObjects())
+            {
+                if (root == null) continue;
+                foreach (Renderer renderer in root.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (renderer == null) continue;
+                    if (!hasBounds) { bounds = renderer.bounds; hasBounds = true; }
+                    else bounds.Encapsulate(renderer.bounds);
+                    sum += renderer.bounds.center;
+                    count++;
+                }
+            }
+            if (count == 0) return false;
+            Vector3 center = hasBounds ? bounds.center : sum / count;
+            Physics.SyncTransforms();
+            foreach (float radius in new[] { 0f, 6f, 12f, 20f, 30f, 45f })
+                for (int i = 0; i < 8; i++)
+                {
+                    Vector3 probe = center + Quaternion.Euler(0f, i * 45f, 0f) * Vector3.forward * radius;
+                    foreach (RaycastHit hit in Physics.RaycastAll(probe + Vector3.up * 60f, Vector3.down, 160f,
+                        ~0, QueryTriggerInteraction.Ignore))
+                    {
+                        if (hit.normal.y < 0.8f) continue;
+                        if (hit.collider is TerrainCollider || hit.collider is MeshCollider || hit.collider is BoxCollider)
+                        {
+                            Vector3 size = hit.collider.bounds.size;
+                            if (size.x < 2f || size.z < 2f) continue;
+                            position = hit.point + Vector3.up * 0.1f;
+                            rotation = Quaternion.LookRotation(Vector3.forward, Vector3.up);
+                            return true;
+                        }
+                    }
+                }
+            return false;
+        }
+
         private IEnumerator ArriveInCity(bool pizzaPreview = false)
         {
+            ResolveCityScenePath();
             if (!Application.CanStreamedLevelBeLoaded(cityScenePath))
             {
-                Debug.LogError("[Dimari] Сцена города не найдена в Build Settings: " + cityScenePath);
-                ShowStatusToast("Сцена города не настроена. Лесная сцена сохранена.");
+                Debug.LogError("[Dimari] Сцена города не найдена в Build Settings: «" + cityScenePath + "». "
+                    + "Откройте File → Build Settings и добавьте скачанную сцену города, "
+                    + "или назначьте её в поле City Scene Path у StoryQuestManager.");
+                ShowStatusToast("Сцена города не добавлена в Build Settings — глава 2 не загрузится.");
                 yield break;
             }
             _isPlayingEndingCutscene = true;
@@ -3644,12 +3787,26 @@ namespace Dimari.Story
                     if (child.name == "CityArrivalPoint") arrival = child;
             if (arrival == null)
             {
+                // A missing marker used to abort chapter 2 entirely. Pick a safe street point instead.
+                if (TryCreateCityArrivalPoint(city, out Vector3 fallbackPoint, out Quaternion fallbackRotation))
+                {
+                    GameObject fallback = new GameObject("CityArrivalPoint");
+                    fallback.transform.SetPositionAndRotation(fallbackPoint, fallbackRotation);
+                    SceneManager.MoveGameObjectToScene(fallback, city);
+                    arrival = fallback.transform;
+                    Debug.LogWarning("[Dimari] CityArrivalPoint не найден: создан автоматически на безопасной точке "
+                        + fallbackPoint.ToString("F1") + ". Сохранение главы 2 продолжится.", fallback);
+                }
+            }
+            if (arrival == null)
+            {
                 yield return SceneManager.UnloadSceneAsync(city);
                 _endingFade = 0f;
                 _isPlayingEndingCutscene = false;
                 _player.IsControlEnabled = true;
                 _cameraController.BeginGameplayTransitionFromCutscene();
-                Debug.LogError("[Dimari] В сцене города нужен CityArrivalPoint на безопасном месте улицы.");
+                Debug.LogError("[Dimari] Не удалось найти безопасную точку прибытия в городе. "
+                    + "Поставьте CityArrivalPoint на улице и сохраните сцену.");
                 yield break;
             }
             foreach (GameObject root in city.GetRootGameObjects())
@@ -3903,16 +4060,17 @@ namespace Dimari.Story
                 end.y = _cutsceneWaterLevel;
                 return (end - start).sqrMagnitude > 400f;
             }
-            // Корабль уходит вперёд от обрыва по воде, которая построена в проёме.
+            // Корабль уходит вперёд от обрыва по построенной воде: маршрут не длиннее её края.
             Vector3 direction = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up);
             if (direction.sqrMagnitude < 0.01f) direction = Vector3.forward;
             direction.Normalize();
             start.y = _cutsceneWaterLevel;
-            float waterLength = Mathf.Clamp(cutsceneWaterSize, 60f, 600f);
-            float length = Mathf.Clamp(sailingDistance, 40f, Mathf.Max(40f, waterLength * 0.55f));
+            float clearWater = Mathf.Max(30f, _voyageWaterLength - Mathf.Max(8.5f, shipModelSize) * 0.6f);
+            float length = Mathf.Clamp(sailingDistance, 30f, clearWater);
             end = start + direction * length;
             end.y = _cutsceneWaterLevel;
-            return (end - start).sqrMagnitude > 400f;
+            // Даже короткий маршрут считается нормальным: важно дойти до главы 2.
+            return (end - start).sqrMagnitude > 100f;
         }
 
         private Quaternion BayRotation()
