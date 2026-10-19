@@ -1,3 +1,5 @@
+using System.IO;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -9,6 +11,34 @@ namespace Dimari.Editor
     [InitializeOnLoad]
     public static class DonsportMaybeBabySetup
     {
+        const string AudioMeta =
+            "AudioImporter:\n  externalObjects: {}\n  serializedVersion: 7\n  defaultSettings:\n    serializedVersion: 2\n" +
+            "    loadType: 0\n    sampleRateSetting: 0\n    sampleRateOverride: 44100\n    compressionFormat: 1\n" +
+            "    quality: 1\n    conversionMode: 0\n    preloadAudioData: 0\n  platformSettingOverrides: {}\n" +
+            "  forceToMono: 0\n  normalize: 1\n  loadInBackground: 0\n  ambisonic: 0\n  3D: 1\n  userData:\n" +
+            "  assetBundleName:\n  assetBundleVariant:\n";
+        static bool audioMetasChecked;
+        static void RepairAudioMetas()
+        {
+            if (audioMetasChecked) return;
+            audioMetasChecked = true;
+            int repaired = 0;
+            foreach (string meta in Directory.GetFiles("Assets/Dimari/Resources", "*.wav.meta"))
+            {
+                string text = File.ReadAllText(meta);
+                Match version = Regex.Match(text, @"AudioImporter:\s*.*?serializedVersion:\s*(\d+)", RegexOptions.Singleline);
+                if (version.Success && int.Parse(version.Groups[1].Value) >= 6) continue;
+                Match guid = Regex.Match(text, @"(?m)^guid:\s*([0-9a-fA-F]{32})");
+                if (!guid.Success) continue;
+                File.WriteAllText(meta, "fileFormatVersion: 2\nguid: " + guid.Groups[1].Value + "\n" + AudioMeta);
+                repaired++;
+            }
+            if (repaired > 0)
+            {
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                Debug.Log("[Dimari] Исправлены метаданные AudioImporter у " + repaired + " WAV, GUID сохранены.");
+            }
+        }
         static DonsportMaybeBabySetup()
         {
             EditorApplication.delayCall += Auto;
@@ -16,7 +46,8 @@ namespace Dimari.Editor
         }
         static void Auto()
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || EditorApplication.isUpdating) return;
+            if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || EditorApplication.isUpdating) { audioMetasChecked = false; return; }
+            RepairAudioMetas();
             var story = Object.FindAnyObjectByType<DonsportReceptionCutscene>();
             if (story == null || story.maybeBaby == null) return;
             Ensure(story, false);
@@ -25,6 +56,7 @@ namespace Dimari.Editor
         [MenuItem("Dimari/Донспорт — кат-сцена разговора с Мэйби Бэйби")]
         public static void Apply()
         {
+            audioMetasChecked = false; RepairAudioMetas();
             if (EditorApplication.isPlayingOrWillChangePlaymode) return;
             var story = Object.FindAnyObjectByType<DonsportReceptionCutscene>();
             if (story == null || story.maybeBaby == null)
