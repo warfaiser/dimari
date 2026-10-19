@@ -3117,17 +3117,6 @@ namespace Dimari.Story
                 _cameraController.UpdateCharacterMeshVisibility(false);
             }
 
-            // Conceal the relocation from the nearby marker to the authored cliff.
-            if (_endingApproachMarker != null)
-            {
-                float fadeTime = 0f;
-                while (fadeTime < 0.45f)
-                {
-                    fadeTime += Time.deltaTime;
-                    _endingFade = Mathf.Clamp01(fadeTime / 0.45f);
-                    yield return null;
-                }
-            }
             CacheCharacterBones();
 
             // Маршрут спуска: сверху по скале, вниз по лестнице, на нижний причал.
@@ -3142,26 +3131,8 @@ namespace Dimari.Story
                     : (plainStart + (_player != null ? _player.transform.forward * 5.2f : Vector3.forward * 5.2f));
                 route = new List<Vector3> { plainStart, plainEnd };
             }
-            // Сначала герой идёт к обрыву от метки, затем спускается: маршрут непрерывный.
-            if (_player != null && route.Count >= 2)
-            {
-                Vector3 heroPos = _player.transform.position;
-                float toCliffTop = Vector3.Distance(heroPos, route[0]);
-                if (toCliffTop >= 0.6f)
-                {
-                    var approach = new List<Vector3>();
-                    int samples = Mathf.Clamp(Mathf.CeilToInt(toCliffTop / 6f), 1, 60);
-                    for (int i = 0; i < samples; i++)
-                    {
-                        Vector3 point = Vector3.Lerp(heroPos, route[0], i / (float)samples);
-                        point.y = GetGroundPoint(point, heroPos.y).y + 0.05f;
-                        approach.Add(point);
-                    }
-                    approach.Add(route[0]);
-                    approach.AddRange(route);
-                    route = approach;
-                }
-            }
+            // Герой не идёт через всю карту: чёрный экран, перенос к обрыву и продолжение сцены.
+            // Дальше маршрут — только спуск: скала, лестница, причал и дорожка к кораблю.
             Vector3 walkStart = route[0];
             Vector3 walkEnd = route[route.Count - 1];
             float routeLength = 0f;
@@ -3176,6 +3147,47 @@ namespace Dimari.Story
 
             CharacterController cc = _player != null ? _player.GetComponent<CharacterController>() : null;
             if (cc != null) cc.enabled = false;
+
+            // Фраза перед затемнением: понятно, что герой уходит к обрыву, а не телепортируется.
+            ShowMonologue("«Так, обрыв уже рядом. Дальше — вниз, к воде.»", 2.2f);
+            float lineTime = 0f;
+            while (lineTime < 1.4f)
+            {
+                lineTime += Time.deltaTime;
+                yield return null;
+            }
+
+            // Чёрный экран: перенос героя к обрыву вместо долгой ходьбы по карте.
+            float blackout = 0f;
+            while (blackout < 0.55f)
+            {
+                blackout += Time.deltaTime;
+                _endingFade = Mathf.Clamp01(blackout / 0.55f);
+                yield return null;
+            }
+            _endingFade = 1f;
+            if (_player != null)
+            {
+                _player.transform.position = walkStart;
+                _player.transform.rotation = walkRot;
+            }
+            if (_mainCam != null)
+            {
+                Vector3 teleportCam = walkStart - walkDir * 3.4f + walkRight * 1.5f + Vector3.up * 1.7f;
+                _mainCam.transform.position = teleportCam;
+                _mainCam.transform.rotation = Quaternion.LookRotation(
+                    walkStart + walkDir * 4f + Vector3.up * 1.0f - teleportCam, Vector3.up);
+            }
+            yield return null;
+            blackout = 0f;
+            while (blackout < 0.55f)
+            {
+                blackout += Time.deltaTime;
+                _endingFade = 1f - Mathf.Clamp01(blackout / 0.55f);
+                yield return null;
+            }
+            _endingFade = 0f;
+
             if (_player != null)
             {
                 _player.transform.position = walkStart;
@@ -3189,27 +3201,12 @@ namespace Dimari.Story
                 }
             }
 
-            if (_endingApproachMarker != null && _mainCam != null)
-            {
-                Vector3 cameraPosition = walkStart - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
-                _mainCam.transform.position = cameraPosition;
-                _mainCam.transform.rotation = Quaternion.LookRotation(walkStart + walkDir * 3.5f + Vector3.up * 1.15f - cameraPosition);
-                float fadeTime = 0f;
-                while (fadeTime < 0.45f)
-                {
-                    fadeTime += Time.deltaTime;
-                    _endingFade = 1f - Mathf.Clamp01(fadeTime / 0.45f);
-                    yield return null;
-                }
-                _endingFade = 0f;
-            }
-
             // Фраза 1: «Нужно идти к воде — возможно, там будет корабль.»
             ShowMonologue("«Нужно идти к воде — возможно, там будет корабль.»", 4.5f);
 
             // Фаза 1 (0..4.2 сек): Персонаж идёт шагом по пирсу к воде с полноценной 3D-анимацией ходьбы!
             // Скорость спокойного шага: по лестнице герой идёт медленнее, чем по ровному.
-            float walkDuration = Mathf.Clamp(routeLength / 1.4f, 4f, 45f);
+            float walkDuration = Mathf.Clamp(routeLength / 2.2f, 3.5f, 22f);
             float t = 0f;
             float stepSoundTimer = 0.2f;
 
