@@ -460,7 +460,13 @@ namespace Dimari.Story
             // 3. ВЫХОД К ВОДЕ, ПРИЧАЛ, КОРАБЛЬ И NPC-ПЕРСОНАЖ (Задача 3 + Кат-сцена)
             // =========================================================================
             Vector3 shorePos = cliffArrivalPoint != null ? cliffArrivalPoint.position : GetGroundPoint(pPos + forward * 15.5f, pPos.y);
-            if (cliffArrivalPoint != null) forward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up).normalized;
+            if (cliffArrivalPoint != null)
+            {
+                // Water is generated along the marker's forward. If the marker points inland,
+                // the bay is culled by terrain and the ship ends up on a strip of grass.
+                EnsureCliffFacesSea();
+                forward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up).normalized;
+            }
             if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
             GameObject shoreEventRoot = new GameObject("Quest3_ShoreAndShip");
             shoreEventRoot.transform.SetParent(storyRoot.transform);
@@ -622,9 +628,8 @@ namespace Dimari.Story
                 string partName = part.name.ToLowerInvariant();
                 if (partName == "helmleftgrip") _wheelLeftGrip = part;
                 if (partName == "helmrightgrip") _wheelRightGrip = part;
-                if (_captainWheel == null && (partName.Contains("wheel") || partName.Contains("steering") || partName == "helm"))
-                    _captainWheel = part;
             }
+            _captainWheel = ChooseHelm(shipObj.transform);
             PositionCaptainAtHelm(npcObj.transform, shipObj.transform);
 
             SpawnNpcCharacterAtShip(npcObj.transform);
@@ -840,6 +845,114 @@ namespace Dimari.Story
             return top > float.NegativeInfinity ? top : _measuredDeckLocalY;
         }
 
+        /// <summary>Rotates the cliff marker toward the side with open water; never toward a hill.</summary>
+        private void EnsureCliffFacesSea()
+        {
+            if (cliffArrivalPoint == null) return;
+            Vector3 origin = cliffArrivalPoint.position;
+            Vector3 currentForward = cliffArrivalPoint.forward;
+            currentForward.y = 0f;
+            if (currentForward.sqrMagnitude < 0.01f) currentForward = Vector3.forward;
+            currentForward.Normalize();
+            float currentScore = ScoreSeaDirection(origin, currentForward);
+            float bestScore = currentScore;
+            Vector3 bestDirection = currentForward;
+            for (int i = 0; i < 24; i++)
+            {
+                Vector3 direction = Quaternion.Euler(0f, i * 15f, 0f) * Vector3.forward;
+                float score = ScoreSeaDirection(origin, direction);
+                if (score > bestScore) { bestScore = score; bestDirection = direction; }
+            }
+            if (bestScore <= currentScore + 0.5f) return;
+            Quaternion previous = cliffArrivalPoint.rotation;
+            cliffArrivalPoint.rotation = Quaternion.LookRotation(bestDirection, Vector3.up);
+            Debug.LogWarning("[Dimari] Точка обрыва смотрела не в море: повёрнута с "
+                + previous.eulerAngles.y.ToString("F0") + "° на " + cliffArrivalPoint.eulerAngles.y.ToString("F0")
+                + "°. Вода, причал и корабль теперь строятся в сторону открытого моря.", this);
+        }
+
+        private float ScoreSeaDirection(Vector3 origin, Vector3 direction)
+        {
+            float score = 0f;
+            float[] distances = { 18f, 30f, 45f, 70f, 110f };
+            foreach (float distance in distances)
+            {
+                Vector3 probe = origin + direction * distance;
+                float top = float.NegativeInfinity;
+                bool terrain = false;
+                foreach (RaycastHit hit in Physics.RaycastAll(probe + Vector3.up * 120f, Vector3.down, 400f, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    if (hit.collider is TerrainCollider) terrain = true;
+                    if (hit.point.y > top) top = hit.point.y;
+                }
+                // No terrain at all below the probe: that is open sea.
+                if (!terrain && top < oceanLevel + 1f) score += 3f + distance * 0.06f;
+                else if (top < origin.y - 8f) score += 0.5f;
+                else score -= 8f;
+            }
+            return score;
+        }
+
+        /// <summary>Wheel on the open deck wins over a decorative wheel inside the cabin.</summary>
+        private Transform ChooseHelm(Transform ship)
+        {
+            Transform best = null;
+            float bestScore = float.MinValue;
+            foreach (Transform part in ship.GetComponentsInChildren<Transform>(true))
+            {
+                string name = part.name.ToLowerInvariant().Replace("_", "").Replace(" ", "");
+                bool named = name.Contains("wheel") || name.Contains("helm") ||
+                             name.Contains("steering") || name.Contains("штурвал");
+                if (!named) continue;
+                Vector3 point = part.position;
+                Renderer renderer = part.GetComponentInChildren<Renderer>();
+                if (renderer != null) point = renderer.bounds.center;
+                float clearance = 8f;
+                foreach (RaycastHit hit in Physics.RaycastAll(point + Vector3.up * 0.5f, Vector3.up, 8f, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    if (hit.transform.IsChildOf(ship)) continue;
+                    clearance = Mathf.Min(clearance, hit.distance);
+                }
+                float deckDistance = _shipDeckMeasured
+                    ? Mathf.Abs(ship.InverseTransformPoint(point).y - _measuredDeckLocalY) : 0f;
+                float score = clearance * 4f - deckDistance * 4f;
+                if (name.Contains("helm")) score += 6f;
+                if (name.Contains("steering")) score += 3f;
+                if (score <= bestScore) continue;
+                bestScore = score;
+                best = part;
+            }
+            if (best != null)
+                Debug.Log("[Dimari] Штурвал выбран: " + best.name + " (открытая палуба важнее декоративного).", best);
+            return best;
+        }
+
+        /// <summary>Nearest point on the deck with open sky — used when the fitted point is indoors.</summary>
+        private Vector3 FindOpenDeckPoint(Transform ship, Vector3 nearLocal)
+        {
+            if (!_shipDeckMeasured) return nearLocal;
+            Vector3 best = nearLocal;
+            float bestScore = float.MinValue;
+            for (int x = -4; x <= 4; x++)
+                for (int z = -4; z <= 4; z++)
+                {
+                    Vector3 local = new Vector3(
+                        nearLocal.x + x * _measuredShipLocalBounds.extents.x * 0.12f,
+                        _measuredDeckLocalY + 0.02f,
+                        nearLocal.z + z * _measuredShipLocalBounds.extents.z * 0.12f);
+                    Vector3 world = ship.TransformPoint(local);
+                    float clearance = 12f;
+                    foreach (RaycastHit hit in Physics.RaycastAll(world + Vector3.up * 0.2f, Vector3.up, 12f, ~0, QueryTriggerInteraction.Ignore))
+                    {
+                        if (hit.transform.IsChildOf(ship)) continue;
+                        clearance = Mathf.Min(clearance, hit.distance);
+                    }
+                    float score = Mathf.Min(clearance, 12f) - Vector3.Distance(local, nearLocal) * 0.35f;
+                    if (score > bestScore) { bestScore = score; best = local; }
+                }
+            return best;
+        }
+
         private void ConfigureBoardingDeck()
         {
             _boardingDeckLocal = new Vector3(0f, 1f, 0f) * (shipModelSize / 8.5f);
@@ -990,6 +1103,7 @@ namespace Dimari.Story
                     Vector3 aft = wheelLocal + ship.InverseTransformDirection(-ship.forward) * 0.45f;
                     if (Mathf.Abs(DeckLocalYAt(aft) - DeckLocalYAt(wheelLocal)) > 0.6f) aft = wheelLocal;
                     aft.y = DeckLocalYAt(aft) + 0.02f;
+                    aft = FindOpenDeckPoint(ship, aft);
                     captain.localPosition = aft;
                     captain.localRotation = Quaternion.Euler(captainFacingEuler);
                     captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
@@ -1015,6 +1129,7 @@ namespace Dimari.Story
                     if (wrongHeight || outsideHull)
                     {
                         fitted.y = deck + 0.02f;
+                        fitted = FindOpenDeckPoint(ship, fitted);
                         captain.localPosition = fitted;
                         if (!_shipGeometryReported)
                         {
@@ -2795,7 +2910,7 @@ namespace Dimari.Story
             Vector3 outboard = Vector3.ProjectOnPlane(captainLocal - center, Vector3.up);
             if (outboard.sqrMagnitude < 0.25f) outboard = Vector3.forward;
             outboard.Normalize();
-            Vector3 meetingLocal = captainLocal + outboard * 1.7f;
+            Vector3 meetingLocal = captainLocal + outboard * 1.25f;
             if (autoFitCrewToMeasuredDeck && _shipDeckMeasured)
             {
                 float halfX = _measuredShipLocalBounds.extents.x * 0.7f;
@@ -2803,6 +2918,15 @@ namespace Dimari.Story
                 meetingLocal.x = Mathf.Clamp(meetingLocal.x, -halfX, halfX);
                 meetingLocal.z = Mathf.Clamp(meetingLocal.z, -halfZ, halfZ);
                 meetingLocal.y = DeckLocalYAt(meetingLocal) + 0.02f;
+                // Stay within talking distance of the helmsman; do not wander off the deck.
+                Vector3 openPoint = FindOpenDeckPoint(_shipTransform, meetingLocal);
+                if (Vector3.Distance(openPoint, captainLocal) <= 2.2f) meetingLocal = openPoint;
+                if (Vector3.Distance(meetingLocal, captainLocal) < 0.9f)
+                {
+                    Vector3 sideways = Vector3.Cross(Vector3.up, outboard).normalized;
+                    meetingLocal = captainLocal + sideways * 1.2f;
+                    meetingLocal.y = DeckLocalYAt(meetingLocal) + 0.02f;
+                }
             }
             else
             {
@@ -3359,11 +3483,10 @@ namespace Dimari.Story
             if (direction.sqrMagnitude < 0.01f) direction = _shipTransform.forward;
             direction.Normalize();
             Vector3 side = Vector3.Cross(Vector3.up, direction).normalized;
+            // A side two-shot: both faces visible, the hero's backpack is not a wall in the lens.
             Vector3 look = captainSpeaking ? captainHead : heroHead;
-            // Over the shoulder from 1.5 m: close enough to read faces, far enough not to clip.
-            Vector3 first = captainSpeaking
-                ? heroHead + side * 0.55f - direction * 0.75f + Vector3.up * 0.12f
-                : captainHead + side * 0.55f + direction * 0.75f + Vector3.up * 0.12f;
+            Vector3 midpoint = (heroHead + captainHead) * 0.5f;
+            Vector3 first = midpoint + side * 1.45f - direction * 0.15f + Vector3.up * 0.05f;
             Vector3 position = SafeCutsceneCamera(look, first, _player.transform, _npcTransform);
             _mainCam.transform.SetPositionAndRotation(position, Quaternion.LookRotation(look - position));
         }
