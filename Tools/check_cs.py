@@ -25,10 +25,10 @@ def check_file(path):
                 if n:
                     key = (text(n, src), len([x for x in m.children if x.type == 'parameter_list'][0].named_children) if any(x.type=='parameter_list' for x in m.children) else 0)
                     names.setdefault(key, []).append(m.start_point[0]+1)
-            elif m.type in ('property_declaration', 'field_declaration'):
-                ids = [x for x in m.named_children if x.type == 'identifier']
-                if m.type == 'property_declaration' and ids:
-                    key = ('prop', text(ids[0], src))
+            elif m.type == 'property_declaration':
+                n = m.child_by_field_name('name')
+                if n:
+                    key = ('prop', text(n, src))
                     names.setdefault(key, []).append(m.start_point[0]+1)
         for k, v in names.items():
             if len(v) > 1:

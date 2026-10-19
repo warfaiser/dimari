@@ -47,13 +47,14 @@ namespace Dimari.Core
         {
             if (Pressed(KeyCode.Escape))
             {
-                var manager = FindManager();
+                var manager = FindManager(true);
                 if (manager != null && StoryQuestManager.LastMenuHotkeyFrame != Time.frameCount)
                 {
                     if (manager.IsMenuOpen) manager.ForceCloseMenu();
                     else manager.OpenPauseMenu();
                 }
             }
+            if (Pressed(KeyCode.F6)) HideUnderCrosshair();
             if (Pressed(KeyCode.F7)) HideLargest();
             if (Pressed(KeyCode.F8)) Recover();
             if (Pressed(KeyCode.F9)) { showReport = !showReport; if (showReport) BuildReport(true); }
@@ -62,7 +63,7 @@ namespace Dimari.Core
         }
 
         /// <summary>Finds the manager even when its GameObject is inactive.</summary>
-        static StoryQuestManager FindManager()
+        static StoryQuestManager FindManager(bool activate)
         {
             var manager = StoryQuestManager.Instance ?? Object.FindAnyObjectByType<StoryQuestManager>();
             if (manager == null)
@@ -74,7 +75,7 @@ namespace Dimari.Core
                     break;
                 }
             }
-            if (manager != null && !manager.gameObject.activeInHierarchy) manager.gameObject.SetActive(true);
+            if (activate && manager != null && !manager.gameObject.activeInHierarchy) manager.gameObject.SetActive(true);
             return manager;
         }
 
@@ -87,6 +88,7 @@ namespace Dimari.Core
                 switch (key)
                 {
                     case KeyCode.Escape: return keyboard.escapeKey.wasPressedThisFrame;
+                    case KeyCode.F6: return keyboard.f6Key.wasPressedThisFrame;
                     case KeyCode.F7: return keyboard.f7Key.wasPressedThisFrame;
                     case KeyCode.F8: return keyboard.f8Key.wasPressedThisFrame;
                     case KeyCode.F9: return keyboard.f9Key.wasPressedThisFrame;
@@ -99,6 +101,30 @@ namespace Dimari.Core
 #else
             return false;
 #endif
+        }
+
+        void HideUnderCrosshair()
+        {
+            Camera cam = Camera.main;
+            if (cam == null) { Debug.LogWarning("[Dimari] F6: нет Camera.main."); return; }
+            Ray ray = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f));
+            if (!Physics.Raycast(ray, out RaycastHit hit, 300f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                Debug.LogWarning("[Dimari] F6: под прицелом пусто — наведите камеру на объект.");
+                return;
+            }
+            var renderer = hit.transform.GetComponent<Renderer>() ?? hit.transform.GetComponentInParent<Renderer>();
+            if (renderer == null) { Debug.LogWarning("[Dimari] F6: у объекта нет рендерера: " + Path(hit.transform)); return; }
+            renderer.enabled = false;
+            hidden.Add(renderer);
+            var material = renderer.sharedMaterial;
+            Debug.LogWarning("[Dimari] F6: СКРЫТ объект под прицелом: " + Path(renderer.transform)
+                + "\n  расстояние " + hit.distance.ToString("F2") + " м | размер " + renderer.bounds.size.ToString("F1")
+                + " | материал " + (material != null ? material.name : "нет")
+                + " | шейдер " + (material != null && material.shader != null ? material.shader.name : "НЕТ")
+                + "\n  родитель: " + (renderer.transform.parent != null ? Path(renderer.transform.parent) : "нет")
+                + "\nЕсли экран очистился — это и был тот объект. Отправьте эти строки.", renderer);
+            BuildReport(true);
         }
 
         void HideLargest()
@@ -121,7 +147,7 @@ namespace Dimari.Core
 
         void Recover()
         {
-            var manager = FindManager();
+            var manager = FindManager(true);
             if (manager != null)
             {
                 manager.RecoverGameplay();
@@ -167,13 +193,25 @@ namespace Dimari.Core
             var text = new StringBuilder();
             text.AppendLine("Dimari F9 | сцена " + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name
                 + " | timeScale " + Time.timeScale.ToString("F2"));
-            var manager = FindManager();
+            var manager = FindManager(false);
             if (manager == null) text.AppendLine("StoryQuestManager: НЕТ (меню/ESC работать не могут)");
             else text.AppendLine("StoryQuestManager: есть | active=" + manager.gameObject.activeInHierarchy
                 + " | меню=" + manager.IsMenuOpen + " | игра=" + manager.HasGameStarted + " | HUD=" + manager.IsHudVisible);
             var player = Object.FindAnyObjectByType<ForestPlayerController>();
             text.AppendLine(player == null ? "Игрок: НЕТ" : "Игрок: управление=" + player.IsControlEnabled + " | " + player.transform.position.ToString("F1"));
-            text.AppendLine("ESC-фолбэк: активен | скрыто F7: " + hidden.Count);
+            text.AppendLine("ESC-фолбэк: активен | скрыто F6/F7: " + hidden.Count);
+            Camera viewCamera = Camera.main;
+            if (viewCamera != null && Physics.Raycast(viewCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f)), out RaycastHit center, 300f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                var centerRenderer = center.transform.GetComponent<Renderer>() ?? center.transform.GetComponentInParent<Renderer>();
+                var centerMaterial = centerRenderer != null ? centerRenderer.sharedMaterial : null;
+                text.AppendLine("ПОД ПРИЦЕЛОМ: " + Short(Path(center.transform), 64)
+                    + "\n    " + center.distance.ToString("F1") + " м | размер "
+                    + (centerRenderer != null ? centerRenderer.bounds.size.ToString("F1") : "нет рендерера")
+                    + " | " + (centerMaterial != null ? centerMaterial.name : "нет материала")
+                    + " | " + (centerMaterial != null && centerMaterial.shader != null ? centerMaterial.shader.name : "шейдер НЕТ"));
+            }
+            else text.AppendLine("ПОД ПРИЦЕЛОМ: пусто");
             text.AppendLine("Крупные объекты рядом (6+ м), по размеру:");
             int index = 0;
             foreach (var candidate in giants)

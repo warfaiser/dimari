@@ -94,6 +94,18 @@ namespace Dimari.Story
         [Min(0.01f)]
         [Tooltip("Масштаб корня NPC относительно нормализованной модели, подобранный на корабле.")]
         public float fittedCaptainScale = 0.3f;
+        [Header("Автопроверка корабля и капитана")]
+        [Tooltip("Измерять реальные размеры корабля и ставить капитана/героя на настоящую палубу, а не на расчётную высоту. Если корабль подходит, ничего не меняется.")]
+        public bool autoFitCrewToMeasuredDeck = true;
+        [Tooltip("Камера кат-сцены не должна оказываться внутри корпуса, скал или паруса.")]
+        public bool keepCutsceneCameraOutOfGeometry = true;
+
+        public Transform ShipTransform => _shipTransform;
+        public Transform CaptainTransform => _npcTransform;
+        public bool ShipDeckMeasured => _shipDeckMeasured;
+        public float MeasuredDeckLocalY => _measuredDeckLocalY;
+        public Bounds MeasuredShipLocalBounds => _measuredShipLocalBounds;
+        public Transform CliffArrivalPoint => cliffArrivalPoint;
 
         public bool IsMenuOpen => _isMenuOpen;
         public bool HasGameStarted => _hasGameStarted;
@@ -688,6 +700,66 @@ namespace Dimari.Story
             return true;
         }
 
+        private bool _shipDeckMeasured;
+        private float _measuredDeckLocalY;
+        private Bounds _measuredShipLocalBounds;
+        private bool _shipGeometryReported;
+
+        /// <summary>Measures the real ship: renderer bounds and the most common top surface (the deck).</summary>
+        private void MeasureShipGeometry()
+        {
+            _shipDeckMeasured = false;
+            if (_shipTransform == null) return;
+            Renderer[] renderers = _shipTransform.GetComponentsInChildren<Renderer>(true);
+            if (renderers == null || renderers.Length == 0) return;
+            Bounds world = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++) world.Encapsulate(renderers[i].bounds);
+            Vector3 min = _shipTransform.InverseTransformPoint(world.min);
+            Vector3 max = _shipTransform.InverseTransformPoint(world.max);
+            _measuredShipLocalBounds = new Bounds((min + max) * 0.5f, new Vector3(
+                Mathf.Abs(max.x - min.x), Mathf.Abs(max.y - min.y), Mathf.Abs(max.z - min.z)));
+
+            // Sample columns over the hull: masts/sails occupy few columns, the deck the most.
+            var heights = new System.Collections.Generic.List<float>();
+            int columns = 9;
+            for (int x = 0; x < columns; x++)
+                for (int z = 0; z < columns; z++)
+                {
+                    float lx = Mathf.Lerp(-_measuredShipLocalBounds.extents.x * 0.7f, _measuredShipLocalBounds.extents.x * 0.7f, x / (columns - 1f));
+                    float lz = Mathf.Lerp(-_measuredShipLocalBounds.extents.z * 0.7f, _measuredShipLocalBounds.extents.z * 0.7f, z / (columns - 1f));
+                    Vector3 origin = _shipTransform.TransformPoint(new Vector3(lx, _measuredShipLocalBounds.max.y + 1.5f, lz));
+                    RaycastHit[] hits = Physics.RaycastAll(origin, Vector3.down, _measuredShipLocalBounds.size.y + 4f, ~0, QueryTriggerInteraction.Ignore);
+                    float top = float.NegativeInfinity;
+                    foreach (var hit in hits)
+                    {
+                        if (_player != null && hit.transform.IsChildOf(_player.transform)) continue;
+                        if (hit.transform.IsChildOf(_shipTransform) && hit.point.y > top) top = hit.point.y;
+                    }
+                    if (top > float.NegativeInfinity) heights.Add(_shipTransform.InverseTransformPoint(new Vector3(0f, top, 0f)).y);
+                }
+            if (heights.Count == 0) return;
+            heights.Sort();
+            // Median ignores the sail and masts; it is the surface the crew stands on.
+            _measuredDeckLocalY = heights[heights.Count / 2];
+            _shipDeckMeasured = true;
+        }
+
+        /// <summary>Top surface of the ship under a local XZ point, or the measured deck.</summary>
+        private float DeckLocalYAt(Vector3 localPoint)
+        {
+            if (_shipTransform == null) return 0f;
+            Vector3 worldPoint = _shipTransform.TransformPoint(localPoint);
+            RaycastHit[] hits = Physics.RaycastAll(worldPoint + Vector3.up * (_measuredShipLocalBounds.size.y + 2f), Vector3.down,
+                _measuredShipLocalBounds.size.y + 6f, ~0, QueryTriggerInteraction.Ignore);
+            float top = float.NegativeInfinity;
+            foreach (var hit in hits)
+            {
+                if (_player != null && hit.transform.IsChildOf(_player.transform)) continue;
+                if (hit.transform.IsChildOf(_shipTransform) && hit.point.y > top) top = hit.point.y;
+            }
+            return top > float.NegativeInfinity ? _shipTransform.InverseTransformPoint(new Vector3(0f, top, 0f)).y : _measuredDeckLocalY;
+        }
+
         private void ConfigureBoardingDeck()
         {
             _boardingDeckLocal = new Vector3(0f, 1f, 0f) * (shipModelSize / 8.5f);
@@ -713,6 +785,14 @@ namespace Dimari.Story
                     _boardingDeckLocal = _shipTransform.InverseTransformPoint(point.position);
                     break;
                 }
+            Physics.SyncTransforms();
+            MeasureShipGeometry();
+            if (_shipDeckMeasured)
+            {
+                _boardingDeckLocal.y = _measuredDeckLocalY + 0.06f;
+                _boardingDeckLocal.x = Mathf.Clamp(_boardingDeckLocal.x, -_measuredShipLocalBounds.extents.x * 0.3f, _measuredShipLocalBounds.extents.x * 0.3f);
+                _boardingDeckLocal.z = Mathf.Clamp(_boardingDeckLocal.z, -_measuredShipLocalBounds.extents.z * 0.3f, _measuredShipLocalBounds.extents.z * 0.3f);
+            }
         }
 
         public bool CanBoardFromWater(Vector3 position)
@@ -774,7 +854,24 @@ namespace Dimari.Story
             instance.transform.localRotation = Quaternion.identity;
             instance.transform.localScale = Vector3.one;
             UpgradeRenderersToURP(instance, new Color(0.35f, 0.24f, 0.16f, 1f));
-            NormalizeModelBoundsOnGround(instance.transform, Mathf.Max(8.5f, shipModelSize));
+            float target = Mathf.Max(8.5f, shipModelSize);
+            // A Sketchfab ship can be hundreds of metres long. Such a model swallows the
+            // camera and puts the captain outside it, so only clearly oversized ships are fitted.
+            Renderer[] renderers = instance.GetComponentsInChildren<Renderer>(true);
+            if (renderers.Length > 0)
+            {
+                Bounds bounds = renderers[0].bounds;
+                for (int i = 1; i < renderers.Length; i++) bounds.Encapsulate(renderers[i].bounds);
+                float maxDim = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
+                if (maxDim > target * 2f)
+                {
+                    float factor = target / maxDim;
+                    instance.transform.localScale *= factor;
+                    Debug.LogWarning("[Dimari] Корабль был " + maxDim.ToString("F0") + " м и закрывал камеру; уменьшен до "
+                        + (maxDim * factor).ToString("F0") + " м. Исходный префаб не изменён.", instance);
+                }
+            }
+            NormalizeModelBoundsOnGround(instance.transform, target);
         }
 
         private void PositionCaptainAtHelm(Transform captain, Transform ship)
@@ -784,6 +881,35 @@ namespace Dimari.Story
                 captain.localPosition = fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f);
                 captain.localRotation = Quaternion.Euler(captainFacingEuler);
                 captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
+                if (autoFitCrewToMeasuredDeck && _shipDeckMeasured)
+                {
+                    Vector3 fitted = captain.localPosition;
+                    float halfX = _measuredShipLocalBounds.extents.x, halfZ = _measuredShipLocalBounds.extents.z;
+                    if (halfX > 0.02f) fitted.x = Mathf.Clamp(fitted.x, -halfX * 0.55f, halfX * 0.55f);
+                    if (halfZ > 0.02f) fitted.z = Mathf.Clamp(fitted.z, -halfZ * 0.55f, halfZ * 0.55f);
+                    float deck = DeckLocalYAt(fitted);
+                    bool wrongHeight = Mathf.Abs(fitted.y - deck) > 0.35f;
+                    bool outsideHull = Mathf.Abs(fitted.x) > halfX || Mathf.Abs(fitted.z) > halfZ;
+                    if (wrongHeight || outsideHull)
+                    {
+                        fitted.y = deck + 0.02f;
+                        captain.localPosition = fitted;
+                        if (!_shipGeometryReported)
+                        {
+                            _shipGeometryReported = true;
+                            Debug.LogWarning("[Dimari] Капитан переставлен на измеренную палубу: было "
+                                + (fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f)).ToString("F2")
+                                + ", стало " + fitted.ToString("F2") + " | размеры корабля " + _measuredShipLocalBounds.size.ToString("F1")
+                                + ". Причина — расчётная высота не совпала с реальной моделью корабля.", this);
+                        }
+                    }
+                    else if (!_shipGeometryReported)
+                    {
+                        _shipGeometryReported = true;
+                        Debug.Log("[Dimari] Капитан на палубе: высота " + fitted.y.ToString("F2") + " при палубе " + deck.ToString("F2")
+                            + " | размеры корабля " + _measuredShipLocalBounds.size.ToString("F1"), this);
+                    }
+                }
                 return;
             }
             captain.localScale = Vector3.one;
@@ -2424,10 +2550,44 @@ namespace Dimari.Story
                 {
                     Vector3 look = _player.transform.position + Vector3.up * 1.3f;
                     Vector3 camera = look - _player.transform.forward * 3f + _shipTransform.right * 1.2f + Vector3.up * 0.6f;
+                    camera = SafeCutsceneCamera(look, camera, _player.transform, _npcTransform);
                     _mainCam.transform.SetPositionAndRotation(camera, Quaternion.LookRotation(look - camera));
                 }
                 yield return null;
             }
+        }
+
+        private bool CameraPointBlocked(Vector3 point, Transform ignoreA, Transform ignoreB)
+        {
+            foreach (Collider collider in Physics.OverlapSphere(point, 0.22f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (collider == null || !collider.enabled || collider.isTrigger) continue;
+                if (ignoreA != null && collider.transform.IsChildOf(ignoreA)) continue;
+                if (ignoreB != null && collider.transform.IsChildOf(ignoreB)) continue;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>Keeps cutscene cameras outside hulls, rocks and sails; falls back to an overhead shot.</summary>
+        private Vector3 SafeCutsceneCamera(Vector3 focus, Vector3 desired, Transform ignoreA, Transform ignoreB)
+        {
+            if (!keepCutsceneCameraOutOfGeometry) return desired;
+            if (!CameraPointBlocked(desired, ignoreA, ignoreB)) return desired;
+            Vector3 direction = desired - focus;
+            float distance = direction.magnitude;
+            if (distance > 0.01f && Physics.SphereCast(focus, 0.2f, direction / distance, out RaycastHit hit, distance, ~0, QueryTriggerInteraction.Ignore)
+                && !(ignoreA != null && hit.transform.IsChildOf(ignoreA)) && !(ignoreB != null && hit.transform.IsChildOf(ignoreB)))
+            {
+                Vector3 pulled = focus + direction / distance * Mathf.Max(0.4f, hit.distance - 0.12f);
+                if (!CameraPointBlocked(pulled, ignoreA, ignoreB)) return pulled;
+            }
+            for (int step = 1; step <= 4; step++)
+            {
+                Vector3 raised = focus + Vector3.up * (0.8f * step) + direction.normalized * 0.6f * step;
+                if (!CameraPointBlocked(raised, ignoreA, ignoreB)) return raised;
+            }
+            return focus + Vector3.up * 3f;
         }
 
         private IEnumerator PlayCaptainConversation()
@@ -2444,7 +2604,19 @@ namespace Dimari.Story
             }
             Vector3 captainLocal = _shipTransform.InverseTransformPoint(_npcTransform.position);
             Vector3 meetingLocal = captainLocal + Vector3.forward * 2f;
-            if (TryFindShipStairRoute(captainLocal, out Vector3 stairBottom, out Vector3 stairTop))
+            if (autoFitCrewToMeasuredDeck && _shipDeckMeasured)
+            {
+                float halfX = _measuredShipLocalBounds.extents.x * 0.6f;
+                float halfZ = _measuredShipLocalBounds.extents.z * 0.6f;
+                meetingLocal.x = Mathf.Clamp(meetingLocal.x, -halfX, halfX);
+                meetingLocal.z = Mathf.Clamp(meetingLocal.z, -halfZ, halfZ);
+                meetingLocal.y = DeckLocalYAt(meetingLocal) + 0.02f;
+            }
+            bool stairsValid = TryFindShipStairRoute(captainLocal, out Vector3 stairBottom, out Vector3 stairTop);
+            if (stairsValid && _shipDeckMeasured &&
+                (stairTop.y < _measuredDeckLocalY - 0.6f || stairBottom.y < _measuredShipLocalBounds.min.y - 0.5f))
+                stairsValid = false;
+            if (stairsValid)
             {
                 meetingLocal.y = stairTop.y;
                 Vector3 approachLocal = stairBottom + (stairBottom - stairTop).normalized * 1.5f;
@@ -2914,6 +3086,7 @@ namespace Dimari.Story
             Vector3 position = captainSpeaking
                 ? heroHead + side * 0.8f - direction * 0.4f
                 : captainHead + side * 0.8f + direction * 0.4f;
+            position = SafeCutsceneCamera(look, position, _player.transform, _npcTransform);
             _mainCam.transform.SetPositionAndRotation(position, Quaternion.LookRotation(look - position));
         }
 
