@@ -74,9 +74,19 @@ namespace Dimari.Story
         [Min(80f)] public float bayWidth = 350f;
         [Min(100f)] public float bayLength = 650f;
         public Material oceanMaterial;
+        [Tooltip("Используется только без метки обрыва. С меткой корабль ставится по Ship Distance From Cliff.")]
         public Vector3 shipOffsetFromCliff = new Vector3(8f, 0f, 40f);
+        [Header("Спуск к кораблю у обрыва")]
+        [Tooltip("Расстояние от метки обрыва до центра корабля в метрах.")]
+        public float shipDistanceFromCliff = 38f;
+        [Tooltip("Насколько вода ниже метки обрыва. Здесь строятся лестница, причал и корабль.")]
+        public float shipWaterDropBelowCliff = 7f;
+        [Tooltip("Размер водной глади в проёме у обрыва, метры.")]
+        public float cutsceneWaterSize = 240f;
         public AudioClip shoutForHelpVoice;
         private InteractableStoryObject _cliffInteraction;
+        private float _cutsceneWaterLevel = -55f;
+        private readonly List<Vector3> _descentPath = new List<Vector3>();
         private Transform _endingApproachMarker;
         private float _endingFade;
         [Header("Метка перехода к обрыву")]
@@ -534,6 +544,7 @@ namespace Dimari.Story
                 startPt.transform.localPosition = new Vector3(0f, 0f, -4f);
                 endPt.transform.localPosition = Vector3.zero;
                 startPt.transform.position = GetGroundPoint(startPt.transform.position, shorePos.y);
+                BuildCliffDescent(root, waterMat, woodMat, darkWoodMat);
                 CreateSurroundingOcean(waterMat);
             }
 
@@ -593,21 +604,14 @@ namespace Dimari.Story
 
             if (cliffArrivalPoint != null)
             {
-                Vector3 seaPosition = root.TransformPoint(shipOffsetFromCliff);
-                seaPosition.y = oceanLevel;
-                // The offset is a suggestion. If it lands on the island (or outside the generated
-                // sea), the ship is moved to the nearest real water cell so the sailing cutscene works.
-                if (!IsInsideOcean(seaPosition))
-                {
-                    if (FindOpenSeaNear(seaPosition, 45f, out Vector3 openSea))
-                    {
-                        Debug.LogWarning("[Dimari] Точка корабля по смещению была не на воде; корабль перенесён на ближайшую воду: "
-                            + seaPosition.ToString("F1") + " → " + openSea.ToString("F1"));
-                        seaPosition = openSea;
-                    }
-                    else Debug.LogWarning("[Dimari] Рядом с причалом нет воды: проверьте Ocean Level, Bay Size и точку обрыва.");
-                }
+                // The ship stands in the water of the gap right below the cliff, where the hero
+                // comes down and sees it. No searching for distant ocean cells.
+                Vector3 seaPosition = root.TransformPoint(new Vector3(0f, 0f, Mathf.Max(12f, shipDistanceFromCliff)));
+                seaPosition.y = _cutsceneWaterLevel;
                 shipObj.transform.position = seaPosition;
+                shipObj.transform.rotation = root.rotation * Quaternion.Euler(0f, 15f, 0f);
+                Debug.Log("[Dimari] Корабль поставлен у обрыва: " + seaPosition.ToString("F1")
+                    + ", вода на " + _cutsceneWaterLevel.ToString("F1") + " м.", this);
             }
 
             bool spawnedAssetShip = TrySpawnAssetStoreShipPrefab(shipObj.transform);
@@ -620,6 +624,13 @@ namespace Dimari.Story
 
             _shipTransform = shipObj.transform;
             ConfigureBoardingDeck();
+            if (cliffArrivalPoint != null && _shipDeckMeasured)
+            {
+                // Посадить корпус в воду, чтобы корабль не стоял на самой поверхности.
+                float sink = Mathf.Clamp(_measuredShipLocalBounds.size.y * 0.12f, 0.3f, 2f);
+                _shipTransform.position -= Vector3.up * sink;
+                Debug.Log("[Dimari] Корабль посажен в воду на " + sink.ToString("F2") + " м.", this);
+            }
             _shipBasePos = _shipTransform.localPosition;
             _shipBaseRot = _shipTransform.localRotation;
 
@@ -644,6 +655,100 @@ namespace Dimari.Story
             BoxCollider triggerCol = root.gameObject.AddComponent<BoxCollider>();
             triggerCol.center = new Vector3(0f, 1.0f, 0.5f);
             triggerCol.size = new Vector3(2.8f, 2.2f, 2.8f);
+        }
+
+        /// <summary>
+        /// Вода в проёме у обрыва, деревянная лестница по скале и нижний причал.
+        /// Строится в локальных координатах Quest3_ShoreAndShip: local +Z — от обрыва в море.
+        /// </summary>
+        private void BuildCliffDescent(Transform root, Material waterMat, Material woodMat, Material darkWoodMat)
+        {
+            _descentPath.Clear();
+            float drop = Mathf.Clamp(shipWaterDropBelowCliff, 2.5f, 40f);
+            _cutsceneWaterLevel = cliffArrivalPoint.position.y - drop;
+            float waterSize = Mathf.Clamp(cutsceneWaterSize, 60f, 600f);
+
+            // 1. Вода прямо в проёме между скалами, а не на уровне oceanLevel.
+            CreatePart(PrimitiveType.Cube, "CutsceneGapWater", root,
+                new Vector3(0f, -drop, waterSize * 0.4f), Quaternion.identity,
+                new Vector3(waterSize, 0.12f, waterSize), waterMat);
+
+            // 2. Лестница вниз по скале: каждая ступень проходима (BoxCollider).
+            int steps = Mathf.Clamp(Mathf.CeilToInt(drop / 0.26f), 6, 64);
+            float rise = drop / steps;
+            float run = 0.38f;
+            float width = 2.6f;
+            float firstStepZ = 0.9f;
+            GameObject stairs = new GameObject("CliffDescentStairs");
+            stairs.transform.SetParent(root, false);
+            for (int i = 0; i < steps; i++)
+            {
+                GameObject step = CreatePart(PrimitiveType.Cube, "CliffStep_" + i, stairs.transform,
+                    new Vector3(0f, -rise * (i + 1) - 0.11f, firstStepZ + run * (i + 0.5f)),
+                    Quaternion.identity, new Vector3(width, 0.22f, run + 0.05f),
+                    i % 2 == 0 ? woodMat : darkWoodMat);
+                step.AddComponent<BoxCollider>();
+                if (i % 4 == 0 && i > 0)
+                {
+                    CreatePart(PrimitiveType.Cylinder, "CliffRailing_" + i, stairs.transform,
+                        new Vector3(width * 0.5f, -rise * i + 0.35f, firstStepZ + run * i),
+                        Quaternion.identity, new Vector3(0.09f, 0.45f, 0.09f), darkWoodMat);
+                }
+            }
+            float stairEndZ = firstStepZ + run * steps;
+            float landingZ = stairEndZ + 1.6f;
+
+            // 3. Нижний причал на воде.
+            GameObject landing = CreatePart(PrimitiveType.Cube, "CliffLanding", root,
+                new Vector3(0f, -drop + 0.02f, landingZ + 2.4f), Quaternion.identity,
+                new Vector3(4.6f, 0.22f, 7.0f), woodMat);
+            landing.AddComponent<BoxCollider>();
+            for (int i = 0; i < 3; i++)
+            {
+                float z = landingZ + i * 2.2f;
+                CreatePart(PrimitiveType.Cylinder, "LandingPost_L_" + i, root,
+                    new Vector3(-2.0f, -drop - 0.55f, z), Quaternion.identity,
+                    new Vector3(0.12f, 0.75f, 0.12f), darkWoodMat);
+                CreatePart(PrimitiveType.Cylinder, "LandingPost_R_" + i, root,
+                    new Vector3(2.0f, -drop - 0.55f, z), Quaternion.identity,
+                    new Vector3(0.12f, 0.75f, 0.12f), darkWoodMat);
+            }
+
+            // 4. Маршрут героя: сверху по скале, вниз по ступеням, на причал.
+            Vector3 topStart = root.TransformPoint(new Vector3(0f, 0f, -4.5f));
+            topStart.y = GetGroundPoint(topStart, topStart.y).y + 0.05f;
+            _descentPath.Add(topStart);
+            _descentPath.Add(root.TransformPoint(new Vector3(0f, 0.05f, 0.35f)));
+            for (int i = 1; i <= steps; i += 2)
+                _descentPath.Add(root.TransformPoint(new Vector3(0f, -rise * i + 0.12f, firstStepZ + run * (i - 0.5f))));
+            _descentPath.Add(root.TransformPoint(new Vector3(0f, -drop + 0.2f, landingZ + 1.2f)));
+
+            if (_shoreStartPoint != null) _shoreStartPoint.position = _descentPath[0];
+            if (_pierWalkEndPoint != null) _pierWalkEndPoint.position = _descentPath[_descentPath.Count - 1];
+
+            Debug.Log("[Dimari] Спуск к кораблю: вода на " + _cutsceneWaterLevel.ToString("F1") + " м (обрыв "
+                + cliffArrivalPoint.position.y.ToString("F1") + " м), ступеней " + steps
+                + ", корабль в " + Mathf.Max(12f, shipDistanceFromCliff).ToString("F0") + " м от метки.", this);
+        }
+
+        /// <summary>Точка на ломаной маршрута по параметру 0..1 и направление движения.</summary>
+        private static Vector3 SamplePath(List<Vector3> path, float t, out Vector3 direction)
+        {
+            direction = Vector3.forward;
+            if (path == null || path.Count == 0) return Vector3.zero;
+            if (path.Count == 1) return path[0];
+            float total = 0f;
+            for (int i = 1; i < path.Count; i++) total += Vector3.Distance(path[i - 1], path[i]);
+            float target = Mathf.Clamp01(t) * total;
+            for (int i = 1; i < path.Count; i++)
+            {
+                float segment = Vector3.Distance(path[i - 1], path[i]);
+                if (target > segment && i < path.Count - 1) { target -= segment; continue; }
+                Vector3 delta = path[i] - path[i - 1];
+                if (delta.sqrMagnitude > 0.0001f) direction = delta.normalized;
+                return Vector3.Lerp(path[i - 1], path[i], segment > 0.0001f ? Mathf.Clamp01(target / segment) : 0f);
+            }
+            return path[path.Count - 1];
         }
 
         private void CreateSurroundingOcean(Material fallback)
@@ -2592,12 +2697,22 @@ namespace Dimari.Story
             }
             CacheCharacterBones();
 
-            Vector3 walkStart = _shoreStartPoint != null
-                ? _shoreStartPoint.position
-                : (_player != null ? _player.transform.position : Vector3.zero);
-            Vector3 walkEnd = _pierWalkEndPoint != null
-                ? _pierWalkEndPoint.position
-                : (walkStart + (_player != null ? _player.transform.forward * 5.2f : Vector3.forward * 5.2f));
+            // Маршрут спуска: сверху по скале, вниз по лестнице, на нижний причал.
+            List<Vector3> route = _descentPath.Count >= 2 ? new List<Vector3>(_descentPath) : null;
+            if (route == null)
+            {
+                Vector3 plainStart = _shoreStartPoint != null
+                    ? _shoreStartPoint.position
+                    : (_player != null ? _player.transform.position : Vector3.zero);
+                Vector3 plainEnd = _pierWalkEndPoint != null
+                    ? _pierWalkEndPoint.position
+                    : (plainStart + (_player != null ? _player.transform.forward * 5.2f : Vector3.forward * 5.2f));
+                route = new List<Vector3> { plainStart, plainEnd };
+            }
+            Vector3 walkStart = route[0];
+            Vector3 walkEnd = route[route.Count - 1];
+            float routeLength = 0f;
+            for (int i = 1; i < route.Count; i++) routeLength += Vector3.Distance(route[i - 1], route[i]);
 
             Vector3 walkDir = (walkEnd - walkStart);
             walkDir.y = 0f;
@@ -2633,7 +2748,8 @@ namespace Dimari.Story
             ShowMonologue("«Нужно идти к воде — возможно, там будет корабль.»", 4.5f);
 
             // Фаза 1 (0..4.2 сек): Персонаж идёт шагом по пирсу к воде с полноценной 3D-анимацией ходьбы!
-            float walkDuration = 4.2f;
+            // Скорость спокойного шага: по лестнице герой идёт медленнее, чем по ровному.
+            float walkDuration = Mathf.Clamp(routeLength / 1.05f, 4f, 16f);
             float t = 0f;
             float stepSoundTimer = 0.2f;
 
@@ -2644,10 +2760,9 @@ namespace Dimari.Story
 
                 if (_player != null)
                 {
-                    Vector3 stepPosition = Vector3.Lerp(walkStart, walkEnd, norm);
-                    if (cliffArrivalPoint != null) PlaceHeroOnCliffSurface(stepPosition);
-                    else _player.transform.position = stepPosition;
-                    _player.transform.rotation = walkRot;
+                    Vector3 stepPosition = SamplePath(route, norm, out Vector3 stepDir);
+                    _player.transform.position = stepPosition;
+                    _player.transform.rotation = Quaternion.LookRotation(stepDir, Vector3.up);
                 }
 
                 // Включаем 3D-анимацию ходьбы в Animator (Speed = 2.0f соответствует Walk_N в StarterAssets/BasicMotions)
@@ -2672,9 +2787,17 @@ namespace Dimari.Story
                 // Кинематографичная камера плавно сопровождает идущего героя сбоку-сзади, открывая вид на воду и корабль
                 if (_mainCam != null && _player != null)
                 {
+                    SamplePath(route, norm, out Vector3 camDir);
                     Vector3 pPos = _player.transform.position;
-                    Vector3 camPos = pPos - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
-                    Vector3 lookAt = pPos + walkDir * 3.5f + Vector3.up * 1.15f;
+                    Vector3 camRight = Vector3.Cross(Vector3.up, camDir).normalized;
+                    // Сбоку-сзади и чуть выше: видно и героя, и ступени, и воду впереди.
+                    Vector3 camPos = pPos - camDir * 2.9f + camRight * 1.5f + Vector3.up * 1.55f;
+                    Vector3 lookAt = pPos + camDir * 3.6f + Vector3.up * 0.9f;
+                    if (Physics.Linecast(lookAt, camPos, out RaycastHit camHit, ~0, QueryTriggerInteraction.Ignore)
+                        && !camHit.transform.IsChildOf(_player.transform))
+                    {
+                        camPos = Vector3.Lerp(lookAt, camPos, 0.55f) + Vector3.up * 0.35f;
+                    }
                     _mainCam.transform.position = camPos;
                     _mainCam.transform.rotation = Quaternion.LookRotation(lookAt - camPos, Vector3.up);
                 }
@@ -2682,10 +2805,14 @@ namespace Dimari.Story
                 yield return null;
             }
 
-            if (cliffArrivalPoint != null && _player != null)
+            if (_player != null)
+            {
+                // Спуск закончен на нижнем причале: ставим героя точно в конец маршрута.
+                _player.transform.position = walkEnd;
+            }
+            else if (cliffArrivalPoint != null)
             {
                 PlaceHeroOnCliffSurface(walkEnd);
-                walkEnd = _player.transform.position;
             }
 
             // Персонаж останавливается у края причала перед кораблём (переход в стойку Idle)
@@ -2707,15 +2834,16 @@ namespace Dimari.Story
             // Фаза 2 (4.2..9.0 сек): Панорамный наезд камеры из-за плеча героя на корабль и NPC у трапа
             float revealDuration = 4.6f;
             t = 0f;
-            Vector3 revealCamStart = walkEnd - walkDir * 2.6f + walkRight * 1.35f + Vector3.up * 1.45f;
-            Vector3 revealCamEnd = walkEnd - walkDir * 2.1f + walkRight * 1.05f + Vector3.up * 1.75f;
+            // С нижнего причала камера поднимается над водой и показывает корабль целиком.
+            Vector3 revealCamStart = walkEnd - walkDir * 1.4f + walkRight * 2.6f + Vector3.up * 1.7f;
+            Vector3 revealCamEnd = walkEnd + walkDir * 2.2f + walkRight * 1.9f + Vector3.up * 2.6f;
             Vector3 shipLookTarget = _shipTransform != null
                 ? (_shipTransform.position + Vector3.up * 1.6f)
                 : (walkEnd + walkDir * 9.0f + Vector3.up * 1.5f);
 
             while (t < revealDuration)
             {
-                if (cliffArrivalPoint != null && _player != null) PlaceHeroOnCliffSurface(walkEnd);
+                if (_player != null) _player.transform.position = walkEnd;
                 t += Time.deltaTime;
                 float norm = Mathf.Clamp01(t / revealDuration);
                 float smooth = Mathf.SmoothStep(0f, 1f, norm);
@@ -3306,24 +3434,23 @@ namespace Dimari.Story
         {
             start = end = _shipTransform != null ? _shipTransform.position : cliffArrivalPoint.position;
             if (cliffArrivalPoint == null) return false;
-            if (!IsInsideOcean(start) && !FindOpenSeaNear(start, 600f, out start)) return false;
-            start.y = oceanLevel;
-            Vector3 direction = sailingDestination != null
-                ? Vector3.ProjectOnPlane(sailingDestination.position - start, Vector3.up)
-                : Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up);
+            if (sailingDestination != null)
+            {
+                start.y = _cutsceneWaterLevel;
+                end = sailingDestination.position;
+                end.y = _cutsceneWaterLevel;
+                return (end - start).sqrMagnitude > 400f;
+            }
+            // Корабль уходит вперёд от обрыва по воде, которая построена в проёме.
+            Vector3 direction = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up);
             if (direction.sqrMagnitude < 0.01f) direction = Vector3.forward;
             direction.Normalize();
-            float length = Mathf.Clamp(sailingDistance, 40f, Mathf.Max(40f, oceanSize * 0.25f));
-            Vector3 candidate = start + direction * length;
-            candidate.y = oceanLevel;
-            if (!IsInsideOcean(candidate))
-            {
-                if (!FindOpenSeaNear(candidate, 700f, out candidate)) return false;
-            }
-            candidate.y = oceanLevel;
-            if ((candidate - start).sqrMagnitude < 400f) return false;
-            end = candidate;
-            return true;
+            start.y = _cutsceneWaterLevel;
+            float waterLength = Mathf.Clamp(cutsceneWaterSize, 60f, 600f);
+            float length = Mathf.Clamp(sailingDistance, 40f, Mathf.Max(40f, waterLength * 0.55f));
+            end = start + direction * length;
+            end.y = _cutsceneWaterLevel;
+            return (end - start).sqrMagnitude > 400f;
         }
 
         private Quaternion BayRotation()
