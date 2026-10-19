@@ -17,7 +17,7 @@ namespace Dimari.Editor
         const float SearchRadius = 35f;
         const float GiantThreshold = 25f;
 
-        [MenuItem("Dimari — проверить точку обрыва и сцену капитана")]
+        [MenuItem("Dimari/Диагностика — проверить точку обрыва и корабль капитана")]
         public static void Inspect()
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
