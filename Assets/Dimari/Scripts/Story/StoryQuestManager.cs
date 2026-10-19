@@ -86,6 +86,9 @@ namespace Dimari.Story
         public AudioClip shoutForHelpVoice;
         private InteractableStoryObject _cliffInteraction;
         private float _cutsceneWaterLevel = -55f;
+        private float _cliffGapDistance = 38f;
+        private float _cliffShipDistance = 44f;
+        private bool _cliffGapFound;
         private readonly List<Vector3> _descentPath = new List<Vector3>();
         private Transform _endingApproachMarker;
         private float _endingFade;
@@ -607,7 +610,7 @@ namespace Dimari.Story
             {
                 // The ship stands in the water of the gap right below the cliff, where the hero
                 // comes down and sees it. No searching for distant ocean cells.
-                Vector3 seaPosition = root.TransformPoint(new Vector3(0f, 0f, Mathf.Max(12f, shipDistanceFromCliff)));
+                Vector3 seaPosition = root.TransformPoint(new Vector3(0f, 0f, Mathf.Max(12f, _cliffShipDistance)));
                 seaPosition.y = _cutsceneWaterLevel;
                 shipObj.transform.position = seaPosition;
                 shipObj.transform.rotation = root.rotation * Quaternion.Euler(0f, 15f, 0f);
@@ -674,7 +677,23 @@ namespace Dimari.Story
                 new Vector3(0f, -drop, waterSize * 0.4f), Quaternion.identity,
                 new Vector3(waterSize, 0.12f, waterSize), waterMat);
 
-            // 2. Лестница вниз по скале: каждая ступень проходима (BoxCollider).
+            // 2. Настоящий проём: идём вперёд от метки, пока впереди не останется только пустота.
+            Vector3 flatForward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up);
+            if (flatForward.sqrMagnitude < 0.01f) flatForward = Vector3.forward;
+            flatForward.Normalize();
+            Vector3 flatRight = Vector3.Cross(Vector3.up, flatForward).normalized;
+            Vector3 gapOrigin = cliffArrivalPoint.position;
+            gapOrigin.y = _cutsceneWaterLevel;
+            _cliffGapDistance = FindCliffGapDistance(gapOrigin, flatForward, flatRight, _cutsceneWaterLevel,
+                Mathf.Max(12f, shipDistanceFromCliff));
+            _cliffGapFound = _cliffGapDistance < Mathf.Max(12f, shipDistanceFromCliff) - 0.1f;
+            // Центр корабля чуть дальше начала проёма, чтобы корпус целиком стоял на воде.
+            _cliffShipDistance = _cliffGapDistance + Mathf.Max(4f, shipModelSize * 0.3f);
+            Debug.Log("[Dimari] Проём у обрыва: корабль в " + _cliffGapDistance.ToString("F1")
+                + " м впереди метки, вода на " + _cutsceneWaterLevel.ToString("F1") + " м"
+                + (_cliffGapFound ? " (найдено пустое место между скалами)." : " (пустое место не найдено, используется заданное расстояние)."), this);
+
+            // 3. Лестница вниз по скале: каждая ступень проходима (BoxCollider).
             int steps = Mathf.Clamp(Mathf.CeilToInt(drop / 0.26f), 6, 64);
             float rise = drop / steps;
             float run = 0.38f;
@@ -715,7 +734,29 @@ namespace Dimari.Story
                     new Vector3(0.12f, 0.75f, 0.12f), darkWoodMat);
             }
 
-            // 4. Маршрут героя: сверху по скале, вниз по ступеням, на причал.
+            // 4. Дорожка от причала к кораблю: герой выходит по ней к борту.
+            float walkwayStart = landingZ + 5.9f;
+            float hullFront = _cliffShipDistance - Mathf.Max(8.5f, shipModelSize) * 0.5f - 2.5f;
+            float walkwayEnd = Mathf.Max(walkwayStart + 1f, hullFront);
+            if (walkwayEnd - walkwayStart > 1.5f)
+            {
+                GameObject walkway = CreatePart(PrimitiveType.Cube, "CliffShipWalkway", root,
+                    new Vector3(0f, -drop + 0.02f, (walkwayStart + walkwayEnd) * 0.5f), Quaternion.identity,
+                    new Vector3(2.2f, 0.2f, walkwayEnd - walkwayStart), woodMat);
+                walkway.AddComponent<BoxCollider>();
+                for (float z = walkwayStart + 2f; z < walkwayEnd; z += 4f)
+                {
+                    CreatePart(PrimitiveType.Cylinder, "WalkwayPost_L", root,
+                        new Vector3(-0.95f, -drop - 0.5f, z), Quaternion.identity,
+                        new Vector3(0.1f, 0.7f, 0.1f), darkWoodMat);
+                    CreatePart(PrimitiveType.Cylinder, "WalkwayPost_R", root,
+                        new Vector3(0.95f, -drop - 0.5f, z), Quaternion.identity,
+                        new Vector3(0.1f, 0.7f, 0.1f), darkWoodMat);
+                }
+            }
+            else walkwayEnd = landingZ + 1.2f;
+
+            // 5. Маршрут героя: сверху по скале, вниз по ступеням, по причалу и дорожке к кораблю.
             Vector3 topStart = root.TransformPoint(new Vector3(0f, 0f, -4.5f));
             topStart.y = GetGroundPoint(topStart, topStart.y).y + 0.05f;
             _descentPath.Add(topStart);
@@ -723,12 +764,13 @@ namespace Dimari.Story
             for (int i = 1; i <= steps; i += 2)
                 _descentPath.Add(root.TransformPoint(new Vector3(0f, -rise * i + 0.12f, firstStepZ + run * (i - 0.5f))));
             _descentPath.Add(root.TransformPoint(new Vector3(0f, -drop + 0.2f, landingZ + 1.2f)));
+            _descentPath.Add(root.TransformPoint(new Vector3(0f, -drop + 0.2f, walkwayEnd)));
 
             if (_shoreStartPoint != null) _shoreStartPoint.position = _descentPath[0];
             if (_pierWalkEndPoint != null) _pierWalkEndPoint.position = _descentPath[_descentPath.Count - 1];
 
             // Диагностика: не окажется ли корабль внутри скалы.
-            Vector3 shipProbe = root.TransformPoint(new Vector3(0f, 0f, Mathf.Max(12f, shipDistanceFromCliff)));
+            Vector3 shipProbe = root.TransformPoint(new Vector3(0f, 0f, Mathf.Max(12f, _cliffShipDistance)));
             float rockTop = float.NegativeInfinity;
             foreach (RaycastHit hit in Physics.RaycastAll(shipProbe + Vector3.up * 120f, Vector3.down, 300f, ~0, QueryTriggerInteraction.Ignore))
                 if (hit.point.y > rockTop) rockTop = hit.point.y;
@@ -739,9 +781,36 @@ namespace Dimari.Story
             else
                 Debug.Log("[Dimari] Место корабля свободно: рельеф ниже воды (" + rockTop.ToString("F1") + " м).", this);
 
-            Debug.Log("[Dimari] Спуск к кораблю: вода на " + _cutsceneWaterLevel.ToString("F1") + " м (обрыв "
+            Debug.Log("[Dimari] Спуск к кораблю: дорожка до " + walkwayEnd.ToString("F1")
+                + " м, вода на " + _cutsceneWaterLevel.ToString("F1") + " м (обрыв "
                 + cliffArrivalPoint.position.y.ToString("F1") + " м), ступеней " + steps
-                + ", корабль в " + Mathf.Max(12f, shipDistanceFromCliff).ToString("F0") + " м от метки.", this);
+                + ", корабль в " + Mathf.Max(12f, _cliffShipDistance).ToString("F0") + " м от метки, дорожка до "
+                + walkwayEnd.ToString("F0") + " м.", this);
+        }
+
+        /// <summary>
+        /// Идёт от обрыва вперёд и возвращает расстояние, на котором впереди уже только пустота:
+        /// именно там, в проёме между скалами, должен стоять корабль.
+        /// </summary>
+        private float FindCliffGapDistance(Vector3 origin, Vector3 forward, Vector3 right, float waterLevel, float fallback)
+        {
+            for (float distance = 12f; distance <= 90f; distance += 2f)
+            {
+                bool empty = true;
+                foreach (float lateral in new[] { 0f, -6f, 6f })
+                {
+                    Vector3 probe = origin + forward * distance + right * lateral;
+                    foreach (RaycastHit hit in Physics.RaycastAll(probe + Vector3.up * 150f, Vector3.down,
+                        320f, ~0, QueryTriggerInteraction.Ignore))
+                    {
+                        if (_player != null && hit.transform.IsChildOf(_player.transform)) continue;
+                        if (hit.collider is TerrainCollider || hit.point.y > waterLevel + 0.4f) { empty = false; break; }
+                    }
+                    if (!empty) break;
+                }
+                if (empty) return distance;
+            }
+            return fallback;
         }
 
         /// <summary>Точка на ломаной маршрута по параметру 0..1 и направление движения.</summary>
@@ -1379,6 +1448,15 @@ namespace Dimari.Story
         /// <summary>Destroys StylShip_Box-style leftovers that were saved into the scene.</summary>
         private static void PurgeShipPlaceholderObjects()
         {
+            // Превью из редактора (Dimari → Корабль — превью сцены обрыва) не должно
+            // остаться рядом с настоящей сценой в Play.
+            foreach (GameObject preview in FindObjectsByType<GameObject>(FindObjectsInactive.Include))
+            {
+                if (preview == null || preview.name != "Dimari_CliffPreview") continue;
+                Debug.Log("[Dimari] Превью обрыва из редактора удалено перед запуском сцены.", preview);
+                DestroyImmediate(preview);
+            }
+
             foreach (MeshFilter filter in FindObjectsByType<MeshFilter>(FindObjectsInactive.Include))
             {
                 if (filter == null || filter.sharedMesh == null) continue;

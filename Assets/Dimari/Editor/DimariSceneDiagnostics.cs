@@ -222,6 +222,129 @@ namespace Dimari.Editor
                 + "Если в Play коричневая стена — нажмите F9 и F6: они покажут точное имя объекта.", "OK");
         }
 
+        [MenuItem("Dimari/Корабль — превью сцены обрыва в Scene")]
+        public static void PreviewCliffScene()
+        {
+            var manager = Object.FindFirstObjectByType<StoryQuestManager>();
+            if (manager == null || manager.cliffArrivalPoint == null)
+            {
+                EditorUtility.DisplayDialog("Dimari", "В сцене нет StoryQuestManager с меткой Cliff Arrival Point.", "OK");
+                return;
+            }
+            RemoveCliffPreview();
+            Physics.SyncTransforms();
+            Transform cliff = manager.cliffArrivalPoint;
+            var root = new GameObject("Dimari_CliffPreview");
+            root.transform.SetPositionAndRotation(cliff.position, cliff.rotation);
+
+            float drop = Mathf.Clamp(manager.shipWaterDropBelowCliff, 2.5f, 40f);
+            float waterLevel = cliff.position.y - drop;
+            float waterSize = Mathf.Clamp(manager.cutsceneWaterSize, 60f, 600f);
+            float shipSize = Mathf.Max(8.5f, manager.shipModelSize);
+
+            Material water = NewMaterial(new Color(0.08f, 0.32f, 0.42f, 0.94f));
+            Material wood = NewMaterial(new Color(0.36f, 0.24f, 0.14f, 1f));
+            Material dark = NewMaterial(new Color(0.24f, 0.15f, 0.09f, 1f));
+
+            Box("Water", root.transform, new Vector3(0f, -drop, waterSize * 0.4f),
+                new Vector3(waterSize, 0.12f, waterSize), water);
+
+            Vector3 flatForward = Vector3.ProjectOnPlane(cliff.forward, Vector3.up).normalized;
+            if (flatForward.sqrMagnitude < 0.01f) flatForward = Vector3.forward;
+            Vector3 flatRight = Vector3.Cross(Vector3.up, flatForward).normalized;
+            Vector3 origin = new Vector3(cliff.position.x, waterLevel, cliff.position.z);
+            float gap = shipSize * 1.5f;
+            for (float distance = 12f; distance <= 90f; distance += 2f)
+            {
+                bool empty = true;
+                foreach (float lateral in new[] { 0f, -6f, 6f })
+                {
+                    Vector3 probe = origin + flatForward * distance + flatRight * lateral;
+                    foreach (RaycastHit hit in Physics.RaycastAll(probe + Vector3.up * 150f, Vector3.down, 320f))
+                    {
+                        if (hit.collider is TerrainCollider || hit.point.y > waterLevel + 0.4f) { empty = false; break; }
+                    }
+                    if (!empty) break;
+                }
+                if (empty) { gap = distance; break; }
+            }
+            float shipDistance = gap + Mathf.Max(4f, shipSize * 0.3f);
+            float hullFront = shipDistance - shipSize * 0.5f - 2.5f;
+
+            int steps = Mathf.Clamp(Mathf.CeilToInt(drop / 0.26f), 6, 64);
+            float rise = drop / steps, run = 0.38f, first = 0.9f;
+            for (int i = 0; i < steps; i++)
+                Box("Step" + i, root.transform,
+                    new Vector3(0f, -rise * (i + 1) - 0.11f, first + run * (i + 0.5f)),
+                    new Vector3(2.6f, 0.22f, run + 0.05f), i % 2 == 0 ? wood : dark);
+
+            float landingZ = first + run * steps + 1.6f;
+            Box("Landing", root.transform, new Vector3(0f, -drop + 0.02f, landingZ + 2.4f),
+                new Vector3(4.6f, 0.22f, 7f), wood);
+            float walkwayStart = landingZ + 5.9f;
+            float walkwayEnd = Mathf.Max(walkwayStart + 1f, hullFront);
+            if (walkwayEnd - walkwayStart > 1.5f)
+                Box("Walkway", root.transform, new Vector3(0f, -drop + 0.02f, (walkwayStart + walkwayEnd) * 0.5f),
+                    new Vector3(2.2f, 0.2f, walkwayEnd - walkwayStart), wood);
+
+            Vector3 shipPosition = root.transform.TransformPoint(new Vector3(0f, 0f, shipDistance));
+            shipPosition.y = waterLevel;
+            GameObject ship = null;
+            if (manager.shipPrefab != null) ship = Object.Instantiate(manager.shipPrefab);
+            if (ship == null)
+            {
+                foreach (string guid in AssetDatabase.FindAssets("t:Prefab"))
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    string name = System.IO.Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+                    string lower = path.ToLowerInvariant();
+                    if (!(lower.Contains("ship") || lower.Contains("pirate") || lower.Contains("galleon"))) continue;
+                    if (name.Contains("box") || name.Contains("collider") || name.Contains("proxy")) continue;
+                    ship = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    if (ship != null) break;
+                }
+            }
+            if (ship != null)
+            {
+                GameObject instance = Object.Instantiate(ship, root.transform);
+                instance.name = "PreviewShip";
+                instance.transform.position = shipPosition;
+                instance.transform.rotation = root.transform.rotation * Quaternion.Euler(0f, 15f, 0f);
+            }
+            else Debug.LogWarning("[Dimari] Для превью не найден корабль. Назначьте его в поле Ship Prefab.");
+
+            Debug.Log("[Dimari] Превью сцены обрыва построено: проём " + gap.ToString("F0") + " м, корабль "
+                + shipDistance.ToString("F0") + " м, вода на " + waterLevel.ToString("F1") + " м. "
+                + "Превью удаляется автоматически при Play или пунктом «Корабль — убрать превью сцены обрыва».", root);
+        }
+
+        [MenuItem("Dimari/Корабль — убрать превью сцены обрыва")]
+        public static void RemoveCliffPreview()
+        {
+            foreach (GameObject go in Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include))
+                if (go != null && go.name == "Dimari_CliffPreview") Object.DestroyImmediate(go);
+        }
+
+        static Material NewMaterial(Color color)
+        {
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            var material = new Material(shader);
+            if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
+            if (material.HasProperty("_Color")) material.SetColor("_Color", color);
+            return material;
+        }
+
+        static void Box(string name, Transform parent, Vector3 localPosition, Vector3 size, Material material)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = name;
+            go.transform.SetParent(parent, false);
+            go.transform.localPosition = localPosition;
+            go.transform.localScale = size;
+            var renderer = go.GetComponent<Renderer>();
+            if (renderer != null) renderer.sharedMaterial = material;
+        }
+
         static string Path(Transform t)
         {
             if (t == null) return "<null>";
