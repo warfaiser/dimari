@@ -249,9 +249,9 @@ namespace Dimari.Cinematics
             pantyBandMaterial = new Material(lit); SetColor(pantyBandMaterial, new Color(.18f, .03f, .06f));
 
             tablet = new GameObject("Cutscene tablet — Dimari photo");
-            Part(PrimitiveType.Cube, "Tablet body", tablet.transform, Vector3.zero, Vector3.one,
+            Part(PrimitiveType.Cube, "Tablet body", tablet.transform, Vector3.zero, Quaternion.identity,
                 new Vector3(.28f, .018f, .20f), tabletBodyMaterial);
-            Part(PrimitiveType.Cube, "Tablet photo screen", tablet.transform, new Vector3(0, 0, .011f), Vector3.one,
+            Part(PrimitiveType.Cube, "Tablet photo screen", tablet.transform, new Vector3(0, 0, .011f), Quaternion.identity,
                 new Vector3(.245f, .006f, .17f), tabletScreenMaterial);
 
             panties = new GameObject("Cutscene panties prop");
