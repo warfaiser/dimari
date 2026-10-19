@@ -43,6 +43,8 @@ namespace Dimari.Story
         public GameObject shipPrefab;
         [Header("Большой корабль и разговор с капитаном")]
         [Min(8.5f)] public float shipModelSize = 28f;
+        [Tooltip("Строить встроенный процедурный корабль и не искать префабы в проекте. Включите, если импортированный ассет оказался заглушкой.")]
+        public bool useProceduralShip = false;
         public bool humanSizedCaptain = true;
         public AudioClip heroCaptainQuestion;
         public AudioClip pirateCaptainAnswer;
@@ -787,6 +789,14 @@ namespace Dimari.Story
             foreach (var pair in area)
                 if (pair.Value > bestCount) { bestCount = pair.Value; bestBin = pair.Key; }
             _measuredDeckLocalY = bestBin * binSize;
+            // A "deck" in the top 15% of the hull is a roof or a lid, not the floor the crew stands on.
+            if (_measuredDeckLocalY > _measuredShipLocalBounds.min.y + _measuredShipLocalBounds.size.y * 0.85f)
+            {
+                Debug.LogWarning("[Dimari] Найденная поверхность " + _measuredDeckLocalY.ToString("F2")
+                    + " м слишком высоко для палубы (верх корпуса " + _measuredShipLocalBounds.max.y.ToString("F2")
+                    + " м). Модель корабля похожа на заглушку/коробку.");
+                return;
+            }
             _shipDeckMeasured = bestCount >= Mathf.Max(3, columns);
         }
 
@@ -797,7 +807,8 @@ namespace Dimari.Story
         private float DeckLocalYAt(Vector3 localPoint)
         {
             if (_shipTransform == null) return 0f;
-            float ceiling = _measuredDeckLocalY + 1.4f;
+            // Stay at deck level: a cabin roof or cargo hatch is above the crew, not the floor.
+            float ceiling = _measuredDeckLocalY + 0.6f;
             float top = float.NegativeInfinity;
             Vector3 origin = _shipTransform.TransformPoint(new Vector3(localPoint.x,
                 _measuredShipLocalBounds.max.y + 2f, localPoint.z));
@@ -809,7 +820,7 @@ namespace Dimari.Story
                 if (hit.normal.y < 0.62f) continue;
                 if (IsRigging(hit.transform)) continue;
                 float y = _shipTransform.InverseTransformPoint(hit.point).y;
-                if (y > ceiling || y < _measuredShipLocalBounds.min.y + 0.15f) continue;
+                if (y > ceiling || y < _measuredDeckLocalY - 1.2f) continue;
                 if (y > top) top = y;
             }
             return top > float.NegativeInfinity ? top : _measuredDeckLocalY;
@@ -818,6 +829,9 @@ namespace Dimari.Story
         private void ConfigureBoardingDeck()
         {
             _boardingDeckLocal = new Vector3(0f, 1f, 0f) * (shipModelSize / 8.5f);
+            // An authored deck marker (or a mesh literally called Floor) is authoritative:
+            // no raycast guessing for models without colliders or with a closed lid.
+            bool explicitDeck = false;
             foreach (MeshFilter mesh in _shipTransform.GetComponentsInChildren<MeshFilter>())
             {
                 if (mesh.sharedMesh == null) continue;
@@ -834,16 +848,26 @@ namespace Dimari.Story
                     Bounds bounds = mesh.sharedMesh.bounds;
                     _boardingDeckLocal = _shipTransform.InverseTransformPoint(mesh.transform.TransformPoint(
                         new Vector3(bounds.center.x, bounds.max.y, bounds.center.z))) + Vector3.up * 0.08f;
+                    explicitDeck = true;
                 }
             }
             foreach (Transform point in _shipTransform.GetComponentsInChildren<Transform>())
                 if (point.name == "ShipBoardingPoint")
                 {
                     _boardingDeckLocal = _shipTransform.InverseTransformPoint(point.position);
+                    explicitDeck = true;
                     break;
                 }
             Physics.SyncTransforms();
-            MeasureShipGeometry();
+            MeasureShipBounds(out _measuredShipLocalBounds);
+            if (explicitDeck)
+            {
+                _measuredDeckLocalY = _boardingDeckLocal.y;
+                _shipDeckMeasured = true;
+                Debug.Log("[Dimari] Палуба задана явно: " + _boardingDeckLocal.y.ToString("F2")
+                    + " м (локально), габариты " + _measuredShipLocalBounds.size.ToString("F1") + ".", this);
+            }
+            else MeasureShipGeometry();
             if (_shipDeckMeasured)
             {
                 Debug.Log("[Dimari] Корабль измерен: палуба на " + _measuredDeckLocalY.ToString("F2")
@@ -1012,6 +1036,7 @@ namespace Dimari.Story
         /// </summary>
         private bool TrySpawnAssetStoreShipPrefab(Transform parent)
         {
+            if (useProceduralShip) return false;
             if (shipPrefab != null)
             {
                 PrepareShipModel(Instantiate(shipPrefab, parent));
@@ -1059,10 +1084,24 @@ namespace Dimari.Story
                     // A package folder named Ship does not make every prop a ship.
                     if (!assetName.Contains("ship") && !assetName.Contains("boat") &&
                         !assetName.Contains("galleon") && !assetName.Contains("vessel")) continue;
+                    // Stylized Pirate Ship ships a StylShip_Box prefab: a rectangular placeholder
+                    // used for collisions. It is not a ship and used to be selected as one.
+                    if (assetName.Contains("box") || assetName.Contains("collider") ||
+                        assetName.Contains("collision") || assetName.Contains("proxy") ||
+                        assetName.Contains("trigger") || assetName.Contains("volume") ||
+                        assetName.Contains("bounds") || assetName.Contains("outline") ||
+                        assetName.Contains("lod") || assetName.Contains("pivot") ||
+                        assetName.Contains("anchor") || assetName.Contains("socket") ||
+                        assetName.Contains("empty") || assetName.Contains("dummy")) continue;
 
                     GameObject candidate = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(path);
                     if (candidate == null) continue;
                     if (candidate.GetComponentInChildren<MeshRenderer>() == null) continue;
+                    if (!LooksLikeShip(candidate, out string reason))
+                    {
+                        Debug.Log("[Dimari] Корабль пропущен: " + path + " — " + reason);
+                        continue;
+                    }
 
                     int score = 10;
                     if (lower.EndsWith(".prefab")) score += 40;
@@ -1092,6 +1131,43 @@ namespace Dimari.Story
 #endif
             return false;
         }
+
+#if UNITY_EDITOR
+        /// <summary>
+        /// Rejects placeholders. A ship is longer than it is wide and is not a cube:
+        /// StylShip_Box (39.6 × 19.8 × 39.6) is exactly the box that used to replace the ship.
+        /// </summary>
+        private static bool LooksLikeShip(GameObject prefab, out string reason)
+        {
+            reason = "";
+            GameObject probe = Instantiate(prefab);
+            try
+            {
+                Renderer[] renderers = probe.GetComponentsInChildren<Renderer>(true);
+                if (renderers.Length == 0) { reason = "нет рендереров"; return false; }
+                Bounds bounds = renderers[0].bounds;
+                for (int i = 1; i < renderers.Length; i++) bounds.Encapsulate(renderers[i].bounds);
+                Vector3 size = bounds.size;
+                float length = Mathf.Max(size.x, size.z);
+                float width = Mathf.Min(size.x, size.z);
+                if (length < 2f || width < 0.3f) { reason = "слишком маленький"; return false; }
+                if (size.y > length * 0.95f) { reason = "высота больше длины — это не корпус"; return false; }
+                if (length / Mathf.Max(0.01f, width) < 1.45f) { reason = "в плане почти квадрат (" + size.ToString("F1") + "), похоже на заглушку"; return false; }
+                int triangles = 0;
+                foreach (MeshFilter filter in probe.GetComponentsInChildren<MeshFilter>(true))
+                    if (filter.sharedMesh != null) triangles += filter.sharedMesh.triangles.Length / 3;
+                foreach (SkinnedMeshRenderer skin in probe.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                    if (skin.sharedMesh != null) triangles += skin.sharedMesh.triangles.Length / 3;
+                if (renderers.Length < 2 && triangles < 1500)
+                { reason = "одна простая деталь (" + triangles + " треугольников), похоже на коллайдер"; return false; }
+                return true;
+            }
+            finally
+            {
+                DestroyImmediate(probe);
+            }
+        }
+#endif
 
         /// <summary>
         /// Строит детализированный 3D-корабль на воде (корпус, палуба, борта, рубка капитана со светящимися иллюминаторами,
@@ -1173,6 +1249,11 @@ namespace Dimari.Story
             // 8. Пароходная труба позади рубки
             CreatePart(PrimitiveType.Cylinder, "SmokeFunnel", parent,
                 new Vector3(0f, 2.95f, -1.55f), Quaternion.Euler(-8f, 0f, 0f), new Vector3(0.36f, 0.65f, 0.36f), hullRedBottomMat);
+
+            // 9. Точка палубы: по ней ставятся капитан, герой и переход с воды.
+            GameObject deckPoint = new GameObject("ShipBoardingPoint");
+            deckPoint.transform.SetParent(parent, false);
+            deckPoint.transform.localPosition = new Vector3(0f, 1.16f, 0f);
         }
 
         /// <summary>
