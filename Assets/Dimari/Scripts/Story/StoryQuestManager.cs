@@ -1260,11 +1260,14 @@ namespace Dimari.Story
                 Vector3 point = part.position;
                 Renderer renderer = part.GetComponentInChildren<Renderer>();
                 if (renderer != null) point = renderer.bounds.center;
-                float clearance = 8f;
-                foreach (RaycastHit hit in Physics.RaycastAll(point + Vector3.up * 0.5f, Vector3.up, 8f, ~0, QueryTriggerInteraction.Ignore))
+                // Считаем и крышу самой модели: декоративный штурвал в каюте получает
+                // нулевой запас, настоящий на открытой палубе — большой.
+                float clearance = 10f;
+                foreach (RaycastHit hit in Physics.RaycastAll(point + Vector3.up * 0.3f, Vector3.up, 10f, ~0, QueryTriggerInteraction.Ignore))
                 {
-                    if (hit.transform.IsChildOf(ship)) continue;
-                    clearance = Mathf.Min(clearance, hit.distance);
+                    if (hit.transform.IsChildOf(_player != null ? _player.transform : ship)) continue;
+                    if (hit.transform.IsChildOf(ship) && IsRigging(hit.transform)) continue;
+                    clearance = Mathf.Min(clearance, Mathf.Max(0f, hit.distance - 0.3f));
                 }
                 float deckDistance = _shipDeckMeasured
                     ? Mathf.Abs(ship.InverseTransformPoint(point).y - _measuredDeckLocalY) : 0f;
@@ -1278,6 +1281,108 @@ namespace Dimari.Story
             if (best != null)
                 Debug.Log("[Dimari] Штурвал выбран: " + best.name + " (открытая палуба важнее декоративного).", best);
             return best;
+        }
+
+        /// <summary>
+        /// Ищет точку, где стоит рулевой: сначала за штурвалом, затем по кольцу вокруг него.
+        /// Палуба берётся лучом вниз по корпусу корабля, а запас над головой считается по всем
+        /// коллайдерам, включая крышу каюты, — поэтому капитан не окажется внутри рубки.
+        /// </summary>
+        private bool TryStandingSpotAtWheel(Transform ship, Vector3 wheelWorld, out Vector3 stand, out float headroom)
+        {
+            stand = wheelWorld;
+            headroom = 0f;
+            if (ship == null) return false;
+            Vector3 shipForward = Vector3.ProjectOnPlane(ship.forward, Vector3.up);
+            if (shipForward.sqrMagnitude < 0.01f) shipForward = Vector3.forward;
+            shipForward.Normalize();
+            Vector3 shipRight = Vector3.Cross(Vector3.up, shipForward).normalized;
+
+            var candidates = new List<Vector3>
+            {
+                wheelWorld - shipForward * 0.55f,
+                wheelWorld - shipForward * 0.9f,
+                wheelWorld + shipForward * 0.55f,
+                wheelWorld + shipRight * 0.6f,
+                wheelWorld - shipRight * 0.6f,
+                wheelWorld - shipForward * 0.55f + shipRight * 0.6f,
+                wheelWorld - shipForward * 0.55f - shipRight * 0.6f,
+                wheelWorld + shipRight * 1.0f,
+                wheelWorld - shipRight * 1.0f
+            };
+
+            bool found = false;
+            float bestScore = float.MinValue;
+            foreach (Vector3 candidate in candidates)
+            {
+                if (!TryShipDeckPoint(ship, candidate, out Vector3 deckPoint)) continue;
+                float clearance = HeadroomAbove(deckPoint + Vector3.up * 0.25f, 4f);
+                // Нужен рост капитана плюс запас на качку.
+                if (clearance < 2.1f) continue;
+                float score = Mathf.Min(clearance, 4f) * 3f + (candidate == candidates[0] ? 2.5f : 0f);
+                if (score <= bestScore) continue;
+                bestScore = score;
+                stand = deckPoint;
+                headroom = clearance;
+                found = true;
+            }
+            return found;
+        }
+
+        /// <summary>Открытая точка палубы в радиусе вокруг капитана: там встаёт герой.</summary>
+        private bool TryOpenDeckSpotNear(Transform ship, Vector3 anchorWorld, float radius, out Vector3 spot)
+        {
+            spot = anchorWorld;
+            bool found = false;
+            float bestScore = float.MinValue;
+            foreach (float ring in new[] { radius, radius * 1.5f })
+                for (int i = 0; i < 8; i++)
+                {
+                    Vector3 direction = Quaternion.Euler(0f, i * 45f, 0f) * ship.forward;
+                    direction.y = 0f;
+                    if (direction.sqrMagnitude < 0.01f) continue;
+                    direction.Normalize();
+                    Vector3 candidate = anchorWorld + direction * ring;
+                    if (!TryShipDeckPoint(ship, candidate, out Vector3 deckPoint)) continue;
+                    float clearance = HeadroomAbove(deckPoint + Vector3.up * 0.25f, 3.5f);
+                    if (clearance < 2.0f) continue;
+                    float score = Mathf.Min(clearance, 3.5f) * 2f - Vector3.Distance(deckPoint, anchorWorld);
+                    if (score <= bestScore) continue;
+                    bestScore = score;
+                    spot = deckPoint;
+                    found = true;
+                }
+            return found;
+        }
+
+        /// <summary>Точка палубы корабля под указанной позицией.</summary>
+        private bool TryShipDeckPoint(Transform ship, Vector3 near, out Vector3 point)
+        {
+            point = near;
+            float best = float.NegativeInfinity;
+            foreach (RaycastHit hit in Physics.RaycastAll(near + Vector3.up * 3f, Vector3.down, 12f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (!hit.transform.IsChildOf(ship)) continue;
+                if (hit.normal.y < 0.55f) continue;
+                if (IsRigging(hit.transform)) continue;
+                if (hit.point.y > near.y + 2.5f) continue;
+                if (hit.point.y > best) { best = hit.point.y; point = hit.point; }
+            }
+            return best > float.NegativeInfinity;
+        }
+
+        /// <summary>Свободное место над точкой: учитываются и крыша, и палуба самого корабля.</summary>
+        private float HeadroomAbove(Vector3 origin, float maxDistance)
+        {
+            float clearance = maxDistance;
+            foreach (RaycastHit hit in Physics.RaycastAll(origin, Vector3.up, maxDistance, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (_player != null && hit.transform.IsChildOf(_player.transform)) continue;
+                if (_npcTransform != null && hit.transform.IsChildOf(_npcTransform)) continue;
+                if (IsRigging(hit.transform)) continue;
+                clearance = Mathf.Min(clearance, hit.distance);
+            }
+            return clearance;
         }
 
         /// <summary>Nearest point on the deck with open sky — used when the fitted point is indoors.</summary>
@@ -1294,12 +1399,7 @@ namespace Dimari.Story
                         _measuredDeckLocalY + 0.02f,
                         nearLocal.z + z * _measuredShipLocalBounds.extents.z * 0.12f);
                     Vector3 world = ship.TransformPoint(local);
-                    float clearance = 12f;
-                    foreach (RaycastHit hit in Physics.RaycastAll(world + Vector3.up * 0.2f, Vector3.up, 12f, ~0, QueryTriggerInteraction.Ignore))
-                    {
-                        if (hit.transform.IsChildOf(ship)) continue;
-                        clearance = Mathf.Min(clearance, hit.distance);
-                    }
+                    float clearance = HeadroomAbove(world + Vector3.up * 0.25f, 12f);
                     float score = Mathf.Min(clearance, 12f) - Vector3.Distance(local, nearLocal) * 0.35f;
                     if (score > bestScore) { bestScore = score; best = local; }
                 }
@@ -1322,8 +1422,10 @@ namespace Dimari.Story
                     MeshCollider collider = mesh.gameObject.AddComponent<MeshCollider>();
                     collider.sharedMesh = mesh.sharedMesh;
                 }
-                string name = mesh.name.ToLowerInvariant();
-                if (name.Contains("floor") && !name.Contains("back") && !name.Contains("bottom"))
+                string name = mesh.name.ToLowerInvariant().Trim();
+                // Только настоящий маркер палубы. Раньше подходило любое имя с «floor»
+                // (FloorMid, FloorTop, FloorBottom), и «палубой» становился пол каюты.
+                if (name == "floor" || name == "maindeck" || name == "deck" || name == "weatherdeck")
                 {
                     Bounds bounds = mesh.sharedMesh.bounds;
                     _boardingDeckLocal = _shipTransform.InverseTransformPoint(mesh.transform.TransformPoint(
@@ -1450,6 +1552,37 @@ namespace Dimari.Story
                 if (wheelRenderer != null) wheelLocal = ship.InverseTransformPoint(wheelRenderer.bounds.center);
                 Vector3 fitted = fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f);
                 bool fittedIsFarFromWheel = (ship.TransformPoint(fitted) - _captainWheel.position).sqrMagnitude > 6.25f;
+                // The wheel is a world-space anchor: measure the actual deck under it by raycast
+                // instead of trusting local deck maths on a model with its own scaling.
+                Vector3 wheelWorld = _captainWheel.position;
+                Renderer helmRenderer = _captainWheel.GetComponentInChildren<Renderer>();
+                if (helmRenderer != null) wheelWorld = helmRenderer.bounds.center;
+                if (TryStandingSpotAtWheel(ship, wheelWorld, out Vector3 stand, out float helmHeadroom))
+                {
+                    // Палуба у штурвала — это и есть та палуба, на которую встаёт герой.
+                    float helmDeckLocal = ship.InverseTransformPoint(stand).y;
+                    if (!_shipDeckMeasured || Mathf.Abs(helmDeckLocal - _measuredDeckLocalY) > 0.2f)
+                    {
+                        _measuredDeckLocalY = helmDeckLocal;
+                        _shipDeckMeasured = true;
+                        _boardingDeckLocal = new Vector3(
+                            Mathf.Clamp(_boardingDeckLocal.x, -_measuredShipLocalBounds.extents.x * 0.3f, _measuredShipLocalBounds.extents.x * 0.3f),
+                            helmDeckLocal + 0.06f,
+                            Mathf.Clamp(_boardingDeckLocal.z, -_measuredShipLocalBounds.extents.z * 0.3f, _measuredShipLocalBounds.extents.z * 0.3f));
+                        Debug.Log("[Dimari] Палуба уточнена по штурвалу: " + helmDeckLocal.ToString("F2") + " м (локально).", this);
+                    }
+                    captain.position = stand;
+                    Vector3 face = Vector3.ProjectOnPlane(wheelWorld - stand, Vector3.up);
+                    captain.rotation = face.sqrMagnitude > 0.01f
+                        ? Quaternion.LookRotation(face.normalized, Vector3.up)
+                        : ship.rotation * Quaternion.Euler(captainFacingEuler);
+                    captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
+                    Debug.Log("[Dimari] Капитан поставлен к штурвалу «" + _captainWheel.name + "»: мир "
+                        + stand.ToString("F2") + " (штурвал " + wheelWorld.ToString("F2")
+                        + ", запас над головой " + helmHeadroom.ToString("F1") + " м), прежняя расчётная точка "
+                        + fitted.ToString("F2") + " не используется.", this);
+                    return;
+                }
                 if (!useFittedCaptainPlacement || fittedIsFarFromWheel)
                 {
                     // Stand just aft of the wheel, where a helmsman stands.
@@ -3389,14 +3522,19 @@ namespace Dimari.Story
                 yield return null;
             }
             Vector3 captainLocal = _shipTransform.InverseTransformPoint(_npcTransform.position);
-            // Stand the hero outboard of the captain (towards the nearest rail). The camera then
-            // sees the two of them against the sea instead of the cabin or the sail.
-            Vector3 center = _measuredShipLocalBounds.center;
-            Vector3 outboard = Vector3.ProjectOnPlane(captainLocal - center, Vector3.up);
-            if (outboard.sqrMagnitude < 0.25f) outboard = Vector3.forward;
-            outboard.Normalize();
-            Vector3 meetingLocal = captainLocal + outboard * 1.25f;
-            if (autoFitCrewToMeasuredDeck && _shipDeckMeasured)
+            // Герой встаёт рядом с капитаном у штурвала на открытой палубе.
+            // Точка ищется лучом по корпусу, а не по «измеренной» палубе: у моделей
+            // со своим масштабом локальная высота палубы может указывать внутрь рубки.
+            Vector3 meetingLocal = captainLocal;
+            if (TryOpenDeckSpotNear(_shipTransform, _npcTransform.position, 1.25f, out Vector3 crewSpot))
+            {
+                meetingLocal = _shipTransform.InverseTransformPoint(crewSpot);
+                Vector3 center = _measuredShipLocalBounds.center;
+                Vector3 outboard = Vector3.ProjectOnPlane(captainLocal - center, Vector3.up);
+                if (outboard.sqrMagnitude < 0.25f) outboard = Vector3.forward;
+                outboard.Normalize();
+            }
+            else if (autoFitCrewToMeasuredDeck && _shipDeckMeasured)
             {
                 float halfX = _measuredShipLocalBounds.extents.x * 0.7f;
                 float halfZ = _measuredShipLocalBounds.extents.z * 0.7f;
