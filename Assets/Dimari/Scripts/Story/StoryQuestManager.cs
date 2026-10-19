@@ -81,7 +81,7 @@ namespace Dimari.Story
         public float shipDistanceFromCliff = 38f;
         [Tooltip("Насколько вода ниже метки обрыва. Здесь строятся лестница, причал и корабль.")]
         public float shipWaterDropBelowCliff = 7f;
-        [Tooltip("Размер водной глади в проёме у обрыва, метры.")]
+        [Tooltip("Старое поле размера воды. Вода теперь строится вокруг корабля по радиусу.")]
         public float cutsceneWaterSize = 240f;
         public AudioClip shoutForHelpVoice;
         private InteractableStoryObject _cliffInteraction;
@@ -93,7 +93,7 @@ namespace Dimari.Story
         private Transform _endingApproachMarker;
         private float _endingFade;
         [Header("Метка перехода к обрыву")]
-        [Range(10f, 20f)] public float endingMarkerDistance = 15f;
+        [Range(10f, 160f)] public float endingMarkerDistance = 30f;
         [Min(0.5f)] public float endingMarkerRadius = 2f;
         [Tooltip("Назначьте полный префаб Sky Protective Suit (также для сборки игры).")]
         public GameObject captainPrefab;
@@ -511,10 +511,22 @@ namespace Dimari.Story
                 Vector3 cliffForward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up);
                 if (cliffForward.sqrMagnitude < 0.01f) cliffForward = Vector3.forward;
                 cliffForward.Normalize();
-                Vector3 approach = cliffArrivalPoint.position - cliffForward * 1.6f;
-                approach.y = GetGroundPoint(approach, cliffArrivalPoint.position.y).y + 0.05f;
+                // Метка перехода стоит в 30 м от планшета по направлению к обрыву: герой уже
+                // отошёл от рюкзака, но ещё не дошёл до края карты.
+                Vector3 toCliff = cliffArrivalPoint.position - tabletPos;
+                toCliff.y = 0f;
+                if (toCliff.sqrMagnitude < 1f) toCliff = cliffForward;
+                toCliff.Normalize();
+                float markerDistance = Mathf.Clamp(endingMarkerDistance, 10f, 160f);
+                float distanceToCliff = Vector3.Distance(
+                    new Vector3(tabletPos.x, 0f, tabletPos.z), new Vector3(cliffArrivalPoint.position.x, 0f, cliffArrivalPoint.position.z));
+                if (distanceToCliff > 10f) markerDistance = Mathf.Min(markerDistance, distanceToCliff - 6f);
+                Vector3 approach = tabletPos + toCliff * markerDistance;
+                approach.y = GetGroundPoint(approach, tabletPos.y).y + 0.05f;
                 marker.transform.position = approach;
-                marker.transform.rotation = Quaternion.LookRotation(cliffForward, Vector3.up);
+                marker.transform.rotation = Quaternion.LookRotation(toCliff, Vector3.up);
+                Debug.Log("[Dimari] Метка перехода к кат-сцене: " + markerDistance.ToString("F0")
+                    + " м от планшета по направлению к обрыву.", marker);
                 _endingApproachMarker = marker.transform;
                 // The cliff is a cinematic destination, not an interactable across the map.
                 shoreInteract.enabled = false;
@@ -789,14 +801,8 @@ namespace Dimari.Story
             _descentPath.Clear();
             float drop = Mathf.Clamp(shipWaterDropBelowCliff, 2.5f, 40f);
             _cutsceneWaterLevel = cliffArrivalPoint.position.y - drop;
-            float waterSize = Mathf.Clamp(cutsceneWaterSize, 60f, 600f);
 
-            // 1. Вода прямо в проёме между скалами, а не на уровне oceanLevel.
-            CreatePart(PrimitiveType.Cube, "CutsceneGapWater", root,
-                new Vector3(0f, -drop, waterSize * 0.4f), Quaternion.identity,
-                new Vector3(waterSize, 0.12f, waterSize), waterMat);
-
-            // 2. Настоящий проём: идём вперёд от метки, пока впереди не останется только пустота.
+            // 1. Настоящий проём: идём вперёд от метки, пока впереди не останется только пустота.
             Vector3 flatForward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up);
             if (flatForward.sqrMagnitude < 0.01f) flatForward = Vector3.forward;
             flatForward.Normalize();
@@ -811,6 +817,10 @@ namespace Dimari.Story
             Debug.Log("[Dimari] Проём у обрыва: корабль в " + _cliffGapDistance.ToString("F1")
                 + " м впереди метки, вода на " + _cutsceneWaterLevel.ToString("F1") + " м"
                 + (_cliffGapFound ? " (найдено пустое место между скалами)." : " (пустое место не найдено, используется заданное расстояние)."), this);
+
+            // 2. Вода: компактный водоём вокруг корабля с вырезами по рельефу.
+            //    Большая плоскость висела над сушей и перерезала скалы.
+            CreateGapWaterMesh(root, waterMat, drop);
 
             // 3. Лестница вниз по скале: каждая ступень проходима (BoxCollider).
             int steps = Mathf.Clamp(Mathf.CeilToInt(drop / 0.26f), 6, 64);
@@ -905,6 +915,86 @@ namespace Dimari.Story
                 + cliffArrivalPoint.position.y.ToString("F1") + " м), ступеней " + steps
                 + ", корабль в " + Mathf.Max(12f, _cliffShipDistance).ToString("F0") + " м от метки, дорожка до "
                 + walkwayEnd.ToString("F0") + " м.", this);
+        }
+
+        /// <summary>
+        /// Вода вокруг корабля: круглый водоём радиусом ~1.4 длины корабля. Ячейки над сушей
+        /// вырезаются, край подрезается на одну ячейку, поэтому вода не наезжает на скалы
+        /// и не висит широкой полосой над островом.
+        /// </summary>
+        private void CreateGapWaterMesh(Transform root, Material waterMat, float drop)
+        {
+            float radius = Mathf.Clamp(Mathf.Max(8.5f, shipModelSize) * 1.6f, 30f, 140f);
+            float step = 3f;
+            int cells = Mathf.Clamp(Mathf.CeilToInt(radius * 2f / step), 12, 96);
+            step = radius * 2f / cells;
+            Physics.SyncTransforms();
+            bool[,] keep = new bool[cells, cells];
+            for (int x = 0; x < cells; x++)
+                for (int z = 0; z < cells; z++)
+                {
+                    float cx = -radius + (x + 0.5f) * step;
+                    float cz = -radius + (z + 0.5f) * step;
+                    if (cx * cx + cz * cz > radius * radius) continue;
+                    Vector3 world = root.TransformPoint(new Vector3(cx, -drop, _cliffShipDistance + cz));
+                    // Вода только там, где над ней нет суши.
+                    keep[x, z] = !TerrainAboveWater(world, _cutsceneWaterLevel - 0.25f);
+                }
+            // Подрезаем край на одну ячейку: вода не касается скал.
+            bool[,] trimmed = new bool[cells, cells];
+            for (int x = 0; x < cells; x++)
+                for (int z = 0; z < cells; z++)
+                {
+                    if (!keep[x, z]) continue;
+                    bool edge = x == 0 || z == 0 || x == cells - 1 || z == cells - 1;
+                    if (!edge && keep[x - 1, z] && keep[x + 1, z] && keep[x, z - 1] && keep[x, z + 1]) trimmed[x, z] = true;
+                }
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            for (int x = 0; x < cells; x++)
+                for (int z = 0; z < cells; z++)
+                {
+                    if (!trimmed[x, z]) continue;
+                    int i = vertices.Count;
+                    float x0 = -radius + x * step;
+                    float z0 = -radius + z * step;
+                    vertices.Add(new Vector3(x0, -drop + 0.06f, _cliffShipDistance + z0));
+                    vertices.Add(new Vector3(x0, -drop + 0.06f, _cliffShipDistance + z0 + step));
+                    vertices.Add(new Vector3(x0 + step, -drop + 0.06f, _cliffShipDistance + z0 + step));
+                    vertices.Add(new Vector3(x0 + step, -drop + 0.06f, _cliffShipDistance + z0));
+                    triangles.Add(i); triangles.Add(i + 1); triangles.Add(i + 2);
+                    triangles.Add(i); triangles.Add(i + 2); triangles.Add(i + 3);
+                }
+            if (vertices.Count == 0)
+            {
+                Debug.LogWarning("[Dimari] В проёме у обрыва нет свободной воды: уменьшите Ship Water Drop Below Cliff "
+                    + "или сдвиньте метку обрыва.", root);
+                return;
+            }
+            var mesh = new Mesh { name = "Dimari_GapWaterWithCutouts", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+            mesh.SetVertices(vertices);
+            mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            GameObject water = new GameObject("CutsceneGapWater");
+            water.transform.SetParent(root, false);
+            water.AddComponent<MeshFilter>().sharedMesh = mesh;
+            water.AddComponent<MeshRenderer>().sharedMaterial = waterMat;
+            Debug.Log("[Dimari] Вода в проёме: " + (vertices.Count / 4) + " ячеек из " + (cells * cells)
+                + ", радиус " + radius.ToString("F0") + " м вокруг корабля, вырезано над сушей "
+                + (cells * cells - vertices.Count / 4) + ".", water);
+        }
+
+        /// <summary>Есть ли над точкой суша выше уровня воды.</summary>
+        private bool TerrainAboveWater(Vector3 point, float level)
+        {
+            foreach (RaycastHit hit in Physics.RaycastAll(point + Vector3.up * 220f, Vector3.down, 520f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (_player != null && hit.transform.IsChildOf(_player.transform)) continue;
+                if (_shipTransform != null && hit.transform.IsChildOf(_shipTransform)) continue;
+                if (hit.point.y > level) return true;
+            }
+            return false;
         }
 
         /// <summary>
@@ -2919,12 +3009,25 @@ namespace Dimari.Story
                     : (plainStart + (_player != null ? _player.transform.forward * 5.2f : Vector3.forward * 5.2f));
                 route = new List<Vector3> { plainStart, plainEnd };
             }
-            // Start the walk where the hero actually stands, so the cutscene looks continuous.
+            // Сначала герой идёт к обрыву от метки, затем спускается: маршрут непрерывный.
             if (_player != null && route.Count >= 2)
             {
                 Vector3 heroPos = _player.transform.position;
-                if (Vector3.Distance(heroPos, route[0]) <= 14f && Vector3.Distance(heroPos, route[0]) >= 0.6f)
-                    route.Insert(0, new Vector3(heroPos.x, route[0].y, heroPos.z));
+                float toCliffTop = Vector3.Distance(heroPos, route[0]);
+                if (toCliffTop >= 0.6f)
+                {
+                    var approach = new List<Vector3>();
+                    int samples = Mathf.Clamp(Mathf.CeilToInt(toCliffTop / 6f), 1, 60);
+                    for (int i = 0; i < samples; i++)
+                    {
+                        Vector3 point = Vector3.Lerp(heroPos, route[0], i / (float)samples);
+                        point.y = GetGroundPoint(point, heroPos.y).y + 0.05f;
+                        approach.Add(point);
+                    }
+                    approach.Add(route[0]);
+                    approach.AddRange(route);
+                    route = approach;
+                }
             }
             Vector3 walkStart = route[0];
             Vector3 walkEnd = route[route.Count - 1];
@@ -2973,7 +3076,7 @@ namespace Dimari.Story
 
             // Фаза 1 (0..4.2 сек): Персонаж идёт шагом по пирсу к воде с полноценной 3D-анимацией ходьбы!
             // Скорость спокойного шага: по лестнице герой идёт медленнее, чем по ровному.
-            float walkDuration = Mathf.Clamp(routeLength / 1.05f, 4f, 16f);
+            float walkDuration = Mathf.Clamp(routeLength / 1.4f, 4f, 45f);
             float t = 0f;
             float stepSoundTimer = 0.2f;
 
