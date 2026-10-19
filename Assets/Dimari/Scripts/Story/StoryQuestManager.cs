@@ -101,7 +101,6 @@ namespace Dimari.Story
         public bool IsHudVisible => _showHUD;
         /// <summary>Frame in which the normal ESC handler ran; used by the fallback handler to avoid double toggling.</summary>
         public static int LastMenuHotkeyFrame { get; private set; } = -1;
-        public bool HasGameStarted => _hasGameStarted;
 
         private string _currentSubtitle = "";
         private float _subtitleTimer = 0f;
