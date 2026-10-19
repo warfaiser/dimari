@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using UnityEngine;
 using Dimari.Cinematics;
@@ -7,15 +9,28 @@ using Dimari.Story;
 namespace Dimari.Core
 {
     /// <summary>
-    /// Аварийные клавиши, которые работают независимо от сюжетного менеджера:
-    /// F8 — вернуть управление и HUD, F9 — показать, что перед камерой и что происходит,
-    /// F10 — принудительно включить максимальную детализацию LOD (убирает billboard-квады).
-    /// ESC дополнительно обрабатывается, если основной менеджер не успел обработать его сам.
+    /// Аварийные клавиши диагностики:
+    /// F7 — скрыть самый крупный объект около камеры (повторять, пока чёрная плоскость не исчезнет),
+    /// F8 — вернуть управление/HUD, F9 — отчёт на экране и в файле, F10 — принудительный LOD0.
+    /// ESC дополнительно обрабатывается, если основной менеджер не обработал его сам.
     /// </summary>
     [DefaultExecutionOrder(10000)]
     public class DimariRuntimeDiagnostics : MonoBehaviour
     {
         static DimariRuntimeDiagnostics instance;
+
+        struct Candidate
+        {
+            public Renderer renderer;
+            public float size;
+            public float distance;
+        }
+
+        readonly List<Candidate> giants = new List<Candidate>();
+        readonly List<Renderer> hidden = new List<Renderer>();
+        bool showReport;
+        string report = "";
+        float nextScan;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Bootstrap()
@@ -23,7 +38,7 @@ namespace Dimari.Core
             if (instance != null) return;
             var existing = Object.FindAnyObjectByType<DimariRuntimeDiagnostics>();
             if (existing != null) { instance = existing; return; }
-            var go = new GameObject("Dimari — аварийная диагностика (F8/F9/F10)");
+            var go = new GameObject("Dimari — аварийная диагностика (F7/F8/F9/F10)");
             Object.DontDestroyOnLoad(go);
             instance = go.AddComponent<DimariRuntimeDiagnostics>();
         }
@@ -32,17 +47,35 @@ namespace Dimari.Core
         {
             if (Pressed(KeyCode.Escape))
             {
-                var story = StoryQuestManager.Instance;
-                // Only when the normal ESC handler did not run this frame (broken/stuck manager).
-                if (story != null && StoryQuestManager.LastMenuHotkeyFrame != Time.frameCount)
+                var manager = FindManager();
+                if (manager != null && StoryQuestManager.LastMenuHotkeyFrame != Time.frameCount)
                 {
-                    if (story.IsMenuOpen) story.ForceCloseMenu();
-                    else story.OpenPauseMenu();
+                    if (manager.IsMenuOpen) manager.ForceCloseMenu();
+                    else manager.OpenPauseMenu();
                 }
             }
+            if (Pressed(KeyCode.F7)) HideLargest();
             if (Pressed(KeyCode.F8)) Recover();
-            if (Pressed(KeyCode.F9)) Inspect();
+            if (Pressed(KeyCode.F9)) { showReport = !showReport; if (showReport) BuildReport(true); }
             if (Pressed(KeyCode.F10)) ForceHighestDetail();
+            if (showReport && Time.unscaledTime >= nextScan) { BuildReport(false); nextScan = Time.unscaledTime + 5f; }
+        }
+
+        /// <summary>Finds the manager even when its GameObject is inactive.</summary>
+        static StoryQuestManager FindManager()
+        {
+            var manager = StoryQuestManager.Instance ?? Object.FindAnyObjectByType<StoryQuestManager>();
+            if (manager == null)
+            {
+                foreach (var any in Resources.FindObjectsOfTypeAll<StoryQuestManager>())
+                {
+                    if (any == null || any.gameObject.scene.name != UnityEngine.SceneManagement.SceneManager.GetActiveScene().name) continue;
+                    manager = any;
+                    break;
+                }
+            }
+            if (manager != null && !manager.gameObject.activeInHierarchy) manager.gameObject.SetActive(true);
+            return manager;
         }
 
         static bool Pressed(KeyCode key)
@@ -54,6 +87,7 @@ namespace Dimari.Core
                 switch (key)
                 {
                     case KeyCode.Escape: return keyboard.escapeKey.wasPressedThisFrame;
+                    case KeyCode.F7: return keyboard.f7Key.wasPressedThisFrame;
                     case KeyCode.F8: return keyboard.f8Key.wasPressedThisFrame;
                     case KeyCode.F9: return keyboard.f9Key.wasPressedThisFrame;
                     case KeyCode.F10: return keyboard.f10Key.wasPressedThisFrame;
@@ -67,19 +101,38 @@ namespace Dimari.Core
 #endif
         }
 
-        static void Recover()
+        void HideLargest()
         {
-            var story = StoryQuestManager.Instance;
-            if (story != null)
+            ScanGiants();
+            foreach (var candidate in giants)
             {
-                story.RecoverGameplay();
+                if (candidate.renderer == null || !candidate.renderer.enabled) continue;
+                candidate.renderer.enabled = false;
+                hidden.Add(candidate.renderer);
+                Debug.LogWarning("[Dimari] F7: скрыт объект " + Path(candidate.renderer.transform)
+                    + " | размер " + candidate.size.ToString("F1") + " м | материал "
+                    + (candidate.renderer.sharedMaterial != null ? candidate.renderer.sharedMaterial.name : "нет")
+                    + "\nЕсли чёрная плоскость исчезла — пришлите эту строку. F7 ещё раз скроет следующий.");
+                BuildReport(true);
+                return;
+            }
+            Debug.LogWarning("[Dimari] F7: больше крупных объектов рядом нет.");
+        }
+
+        void Recover()
+        {
+            var manager = FindManager();
+            if (manager != null)
+            {
+                manager.RecoverGameplay();
                 Debug.Log("[Dimari] F8: управление и HUD восстановлены.");
                 return;
             }
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
             Time.timeScale = 1f;
-            Debug.LogWarning("[Dimari] F8: StoryQuestManager не найден — освобождены курсор и timeScale.");
+            Debug.LogError("[Dimari] F8: StoryQuestManager отсутствует в этой сцене — освобождены только курсор и timeScale. "
+                + "Меню не появится, пока не создана система задач: Dimari → Диагностика — создать систему меню и задач.");
         }
 
         static void ForceHighestDetail()
@@ -87,74 +140,84 @@ namespace Dimari.Core
             LODGroup[] groups = Object.FindObjectsByType<LODGroup>(FindObjectsSortMode.None);
             foreach (var group in groups) if (group != null) group.ForceLOD(0);
             QualitySettings.lodBias = Mathf.Max(QualitySettings.lodBias, 2f);
-            Debug.Log("[Dimari] F10: принудительный LOD0 для " + groups.Length + " групп, lodBias=" + QualitySettings.lodBias.ToString("F1"));
+            Debug.Log("[Dimari] F10: LOD0 для " + groups.Length + " групп, lodBias=" + QualitySettings.lodBias.ToString("F1"));
         }
 
-        static void Inspect()
+        void ScanGiants()
         {
-            var log = new StringBuilder();
-            log.AppendLine("[Dimari] ===== F9: диагностика сцены =====");
-            log.AppendLine("Сцена: " + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name
-                + " | timeScale=" + Time.timeScale.ToString("F2"));
-
-            var story = StoryQuestManager.Instance;
-            if (story == null) log.AppendLine("StoryQuestManager: НЕТ");
-            else log.AppendLine("Меню=" + story.IsMenuOpen + " | игра начата=" + story.HasGameStarted
-                + " | HUD=" + story.IsHudVisible + " | планшет=" + story.IsTabletViewerOpen);
-            var player = Object.FindAnyObjectByType<ForestPlayerController>();
-            if (player == null) log.AppendLine("Игрок: НЕТ");
-            else log.AppendLine("Игрок: управление=" + player.IsControlEnabled + " | позиция=" + player.transform.position.ToString("F1"));
-            log.AppendLine("Курсор: " + Cursor.lockState + " | виден=" + Cursor.visible);
-            log.AppendLine("Кат-сцены: приём=" + DonsportReceptionCutscene.IsRunning
-                + " | Мэйби Бэйби=" + DonsportMaybeBabyCutscene.IsRunning);
-
+            giants.Clear();
             Camera cam = Camera.main;
-            if (cam == null) log.AppendLine("Camera.main: НЕТ");
-            else
+            Vector3 origin = cam != null ? cam.transform.position : Vector3.zero;
+            foreach (var renderer in Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))
             {
-                log.AppendLine("Камера: " + cam.name + " @ " + cam.transform.position.ToString("F1"));
-                Ray ray = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f));
-                if (Physics.Raycast(ray, out RaycastHit hit, 1000f, ~0, QueryTriggerInteraction.Ignore))
-                {
-                    log.AppendLine("ПОД ПРИЦЕЛОМ: " + Path(hit.transform) + " | " + hit.distance.ToString("F1") + " м");
-                    var renderer = hit.transform.GetComponent<Renderer>();
-                    if (renderer == null) renderer = hit.transform.GetComponentInParent<Renderer>();
-                    if (renderer != null)
-                    {
-                        log.AppendLine("  размер: " + renderer.bounds.size.ToString("F1") + " | меш: "
-                            + (renderer is SkinnedMeshRenderer ? "skinned" : "static"));
-                        var material = renderer.sharedMaterial;
-                        log.AppendLine("  материал: " + (material != null ? material.name : "НЕТ")
-                            + " | шейдер: " + (material != null && material.shader != null ? material.shader.name : "НЕТ/ОШИБКА"));
-                    }
-                    var lod = hit.transform.GetComponentInParent<LODGroup>();
-                    if (lod != null)
-                    {
-                        LOD[] levels = lod.GetLODs();
-                        log.AppendLine("  LODGroup: " + Path(lod.transform) + " | уровней: " + levels.Length
-                            + " | renderers LOD0: " + (levels.Length > 0 ? levels[0].renderers.Length : 0));
-                    }
-                }
-                else log.AppendLine("ПОД ПРИЦЕЛОМ: пусто (луч 1000 м)");
-
-                log.AppendLine("Крупные объекты рядом (до 45 м, размер > 7 м):");
-                int found = 0;
-                Renderer[] renderers = Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None);
-                foreach (var r in renderers)
-                {
-                    if (r == null) continue;
-                    Bounds b = r.bounds;
-                    float size = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
-                    if (size < 7f) continue;
-                    if (Vector3.Distance(cam.transform.position, b.center) > 45f) continue;
-                    log.AppendLine("  • " + Path(r.transform) + " | " + b.size.ToString("F1")
-                        + " | " + (r.sharedMaterial != null ? r.sharedMaterial.name : "нет материала"));
-                    if (++found >= 15) break;
-                }
-                if (found == 0) log.AppendLine("  нет");
+                if (renderer == null || !renderer.enabled) continue;
+                Bounds bounds = renderer.bounds;
+                float size = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
+                if (size < 6f) continue;
+                float distance = Vector3.Distance(origin, bounds.center);
+                if (distance > 90f) continue;
+                giants.Add(new Candidate { renderer = renderer, size = size, distance = distance });
             }
-            log.Append("======================================");
-            Debug.Log(log.ToString());
+            giants.Sort((a, b) => b.size.CompareTo(a.size));
+        }
+
+        void BuildReport(bool writeFile)
+        {
+            ScanGiants();
+            var text = new StringBuilder();
+            text.AppendLine("Dimari F9 | сцена " + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name
+                + " | timeScale " + Time.timeScale.ToString("F2"));
+            var manager = FindManager();
+            if (manager == null) text.AppendLine("StoryQuestManager: НЕТ (меню/ESC работать не могут)");
+            else text.AppendLine("StoryQuestManager: есть | active=" + manager.gameObject.activeInHierarchy
+                + " | меню=" + manager.IsMenuOpen + " | игра=" + manager.HasGameStarted + " | HUD=" + manager.IsHudVisible);
+            var player = Object.FindAnyObjectByType<ForestPlayerController>();
+            text.AppendLine(player == null ? "Игрок: НЕТ" : "Игрок: управление=" + player.IsControlEnabled + " | " + player.transform.position.ToString("F1"));
+            text.AppendLine("ESC-фолбэк: активен | скрыто F7: " + hidden.Count);
+            text.AppendLine("Крупные объекты рядом (6+ м), по размеру:");
+            int index = 0;
+            foreach (var candidate in giants)
+            {
+                if (index++ >= 10) break;
+                var material = candidate.renderer.sharedMaterial;
+                text.AppendLine((candidate.renderer.enabled ? "• " : "× ") + Short(Path(candidate.renderer.transform), 64)
+                    + "\n    " + candidate.size.ToString("F0") + " м | " + candidate.distance.ToString("F0") + " м от камеры | "
+                    + (material != null ? material.name : "нет материала") + " | "
+                    + (material != null && material.shader != null ? material.shader.name : "шейдер НЕТ"));
+            }
+            if (giants.Count == 0) text.AppendLine("  крупных объектов рядом нет");
+            report = text.ToString();
+            if (!writeFile) return;
+            Debug.Log("[Dimari] " + report);
+            try
+            {
+                string projectFile = System.IO.Path.GetFullPath(System.IO.Path.Combine(Application.dataPath, "..", "DimariReport.txt"));
+                File.WriteAllText(projectFile, report);
+                File.WriteAllText(System.IO.Path.Combine(Application.persistentDataPath, "DimariReport.txt"), report);
+                Debug.Log("[Dimari] Отчёт записан: " + projectFile);
+            }
+            catch (System.Exception e) { Debug.LogWarning("[Dimari] Не удалось записать отчёт: " + e.Message); }
+        }
+
+        static string Short(string value, int limit)
+        {
+            return value.Length <= limit ? value : "…" + value.Substring(value.Length - limit + 1);
+        }
+
+        void OnGUI()
+        {
+            if (!showReport) return;
+            float width = Mathf.Min(Screen.width - 30f, 900f);
+            var style = new GUIStyle(GUI.skin.box)
+            {
+                fontSize = Mathf.Clamp(Screen.height / 55, 13, 19),
+                alignment = TextAnchor.UpperLeft,
+                wordWrap = false
+            };
+            GUI.depth = -300;
+            GUI.Box(new Rect(15f, 15f, width, Screen.height * 0.62f), report, style);
+            GUI.Box(new Rect(15f, Screen.height * 0.62f + 20f, width, 34f),
+                "F9 — закрыть • F7 — скрыть самый крупный объект • F8 — вернуть управление • F10 — LOD0", style);
         }
 
         static string Path(Transform t)
