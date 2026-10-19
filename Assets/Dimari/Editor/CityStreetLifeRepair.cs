@@ -68,7 +68,7 @@ namespace Dimari.Editor
             {
                 if(city==null){city=new GameObject("Dimari_CityLife");Undo.RegisterCreatedObjectUndo(city,"Street population root");}
                 var oldGraphs=new List<CityLifeGraph>(city.GetComponentsInChildren<CityLifeGraph>());
-                foreach(var agent in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))if(agent.gameObject.scene==city.scene)
+                foreach(var agent in Object.FindObjectsByType<CityLifeAgent>())if(agent.gameObject.scene==city.scene)
                     foreach(var collider in agent.GetComponentsInChildren<Collider>()){disabled[collider]=collider.enabled;collider.enabled=false;}
                 Physics.SyncTransforms();
                 CityLifeGraph road=CityLifeSetup.Graph(city.transform,false);Undo.RegisterCreatedObjectUndo(road.gameObject,"Rebuild road routes");string roadsReport=CityLifeSetup.LastGraphReport;
@@ -81,14 +81,14 @@ namespace Dimari.Editor
                 if(AssetDatabase.IsValidFolder("Assets/Dimari/NPCs"))foreach(string guid in AssetDatabase.FindAssets("t:Prefab",new[]{"Assets/Dimari/NPCs"}))
                 {var prefab=AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GUIDToAssetPath(guid));var animator=prefab.GetComponentInChildren<Animator>();if(animator!=null&&animator.isHuman&&animator.avatar!=null&&animator.avatar.isValid)people.Add(prefab);}
                 var walkers=new List<CityLifeAgent>();var cars=new List<CityLifeAgent>();
-                foreach(var agent in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
+                foreach(var agent in Object.FindObjectsByType<CityLifeAgent>())
                 {
                     if(agent.gameObject.scene!=city.scene||agent.seated||agent.graph==null)continue;
                     if(agent.vehicle)cars.Add(agent);else walkers.Add(agent);
                 }
                 var anchors=new List<Vector3>();
                 Transform arrival=null;
-                foreach(var candidate in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include,FindObjectsSortMode.None))if(candidate.gameObject.scene==city.scene&&candidate.name=="CityArrivalPoint"){arrival=candidate;break;}
+                foreach(var candidate in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include))if(candidate.gameObject.scene==city.scene&&candidate.name=="CityArrivalPoint"){arrival=candidate;break;}
                 if(arrival!=null)anchors.Add(arrival.position);
                 var player=Object.FindAnyObjectByType<ForestPlayerController>();if(player!=null&&player.gameObject.scene==city.scene)anchors.Add(player.transform.position);
                 var admin=Object.FindAnyObjectByType<AdministrationEntrance>();if(admin!=null)anchors.Add(admin.transform.position);
@@ -108,13 +108,13 @@ namespace Dimari.Editor
                 foreach(var old in oldGraphs)
                 {
                     if(old==null||old==road||old==walk)continue;bool used=false;
-                    foreach(var agent in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))if(agent.graph==old){used=true;break;}
+                    foreach(var agent in Object.FindObjectsByType<CityLifeAgent>())if(agent.graph==old){used=true;break;}
                     if(!used)Undo.DestroyObjectImmediate(old.gameObject);
                 }
                 if(city.transform.Find(Stamp)==null&&pedestrianCount>0&&carCount>0)
                 {var stamp=new GameObject(Stamp);stamp.transform.SetParent(city.transform,false);Undo.RegisterCreatedObjectUndo(stamp,"Street repair stamp");}
                 bool conversationFound=false;
-                foreach(var conversation in Object.FindObjectsByType<CityAmbientConversations>(FindObjectsSortMode.None))if(conversation.gameObject.scene==city.scene)
+                foreach(var conversation in Object.FindObjectsByType<CityAmbientConversations>())if(conversation.gameObject.scene==city.scene)
                 {Undo.RecordObject(conversation,"One ambient conversation scheduler");conversation.enabled=!conversationFound;conversationFound=true;}
                 if(!conversationFound){var go=new GameObject("City conversations");go.transform.SetParent(city.transform,false);Undo.RegisterCreatedObjectUndo(go,"Street conversations");Undo.AddComponent<CityAmbientConversations>(go);}
                 EditorSceneManager.MarkSceneDirty(city.scene);AssetDatabase.SaveAssets();

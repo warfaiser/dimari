@@ -21,7 +21,7 @@ namespace Dimari.Editor
         {
             var scene = SceneManager.GetActiveScene();
             var items = new List<Item>();
-            foreach (var renderer in Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))
+            foreach (var renderer in Object.FindObjectsByType<Renderer>())
             {
                 if (renderer == null || renderer.gameObject.scene != scene) continue;
                 Bounds bounds = renderer.bounds;
@@ -71,7 +71,7 @@ namespace Dimari.Editor
         [MenuItem("Dimari/Диагностика — список LOD-групп (чёрные деревья)")]
         public static void ListLods()
         {
-            LODGroup[] groups = Object.FindObjectsByType<LODGroup>(FindObjectsSortMode.None);
+            LODGroup[] groups = Object.FindObjectsByType<LODGroup>();
             var log = new StringBuilder();
             log.AppendLine("[Dimari] LOD-групп в сцене: " + groups.Length);
             int billboardLike = 0;
@@ -99,6 +99,61 @@ namespace Dimari.Editor
             EditorUtility.DisplayDialog("LOD-диагностика",
                 "LOD-групп: " + groups.Length + "\nПохожих на billboard: " + billboardLike
                 + "\n\nПодробности с путями объектов — в Console.", "OK");
+        }
+
+        [MenuItem("Dimari/Корабль — убрать заглушку StylShip_Box из сцены")]
+        public static void RemoveShipPlaceholder()
+        {
+            var scene = SceneManager.GetActiveScene();
+            int removed = 0;
+            foreach (MeshFilter filter in Object.FindObjectsByType<MeshFilter>(FindObjectsInactive.Include))
+            {
+                if (filter == null || filter.sharedMesh == null) continue;
+                string meshName = filter.sharedMesh.name.ToLowerInvariant().Replace(" ", "").Replace("_", "");
+                if (!meshName.Contains("stylshipbox") && !meshName.Contains("shipbox") && !meshName.Contains("shipcollider")) continue;
+                Transform victim = filter.transform;
+                for (Transform t = filter.transform; t != null; t = t.parent)
+                    if (t.name == "Dimari_WaterShip" || t.name == "AssetStore_Ship_Model") victim = t;
+                Debug.Log("[Dimari] Удалена заглушка корабля «" + Path(victim) + "» (меш " + filter.sharedMesh.name + ").", victim);
+                Object.DestroyImmediate(victim.gameObject);
+                removed++;
+            }
+
+            int cleared = 0;
+            foreach (var manager in Object.FindObjectsByType<StoryQuestManager>())
+            {
+                if (manager == null || manager.shipPrefab == null) continue;
+                bool placeholder = false;
+                foreach (MeshFilter filter in manager.shipPrefab.GetComponentsInChildren<MeshFilter>(true))
+                {
+                    if (filter.sharedMesh == null) continue;
+                    string meshName = filter.sharedMesh.name.ToLowerInvariant().Replace(" ", "").Replace("_", "");
+                    if (meshName.Contains("stylshipbox") || meshName.Contains("shipbox") || meshName.Contains("shipcollider"))
+                    { placeholder = true; break; }
+                }
+                if (!placeholder) continue;
+                var serialized = new SerializedObject(manager);
+                serialized.FindProperty("shipPrefab").objectReferenceValue = null;
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+                EditorUtility.SetDirty(manager);
+                cleared++;
+            }
+
+            if (removed > 0 || cleared > 0)
+            {
+                EditorSceneManager.MarkSceneDirty(scene);
+                Debug.Log("[Dimari] Готово: удалено объектов — " + removed + ", очищено полей Ship Prefab — " + cleared
+                    + ". Сохраните сцену (Ctrl+S), чтобы заглушка больше не появлялась.");
+            }
+            else
+            {
+                Debug.Log("[Dimari] Заглушка StylShip_Box в сцене не найдена — всё чисто.");
+            }
+            EditorUtility.DisplayDialog("Dimari",
+                removed + cleared > 0
+                    ? "Заглушка корабля удалена. Сохраните сцену (Ctrl+S).\nУдалено объектов: " + removed + ", очищено Ship Prefab: " + cleared
+                    : "Заглушка StylShip_Box не найдена — сцена чистая.",
+                "OK");
         }
 
         [MenuItem("Dimari/Диагностика — корабль, капитан и точка обрыва")]
@@ -138,7 +193,7 @@ namespace Dimari.Editor
                 }
             }
             Transform ship = null;
-            foreach (var candidate in Object.FindObjectsByType<Transform>(FindObjectsSortMode.None))
+            foreach (var candidate in Object.FindObjectsByType<Transform>())
             {
                 if (candidate.name == "Dimari_WaterShip" || candidate.name == "AssetStore_Ship_Model") { ship = candidate; break; }
             }

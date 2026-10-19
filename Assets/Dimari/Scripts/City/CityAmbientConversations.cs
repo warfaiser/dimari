@@ -128,7 +128,7 @@ namespace Dimari.City
         }
         bool ChoosePair(out CityLifeAgent a,out CityLifeAgent b)
         {
-            a=null;b=null;var agents=FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None);
+            a=null;b=null;var agents=FindObjectsByType<CityLifeAgent>();
             var building=GameObject.Find("Dimari_PizzaExpress24");Transform pizza=building!=null?building.transform:null;
             if(pizza==null||!InsidePizza())return false;
             int candidates=0;

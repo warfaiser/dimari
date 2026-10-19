@@ -35,7 +35,7 @@ namespace Dimari.Editor
             if(pool.Count>0)
             {
                 if(GameObject.Find("Dimari_CityLife")==null)CityLifeSetup.Install();
-                foreach(var old in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
+                foreach(var old in Object.FindObjectsByType<CityLifeAgent>())
                 {
                     if(old.vehicle||old.name=="Pizza seller Obzhorka"||old.gameObject.scene!=pizza.scene)continue;
                     Vector3 position=old.transform.position;
@@ -55,7 +55,7 @@ namespace Dimari.Editor
                     Undo.RegisterCreatedObjectUndo(fresh.gameObject,"Replace population model");Undo.DestroyObjectImmediate(old.gameObject);replaced++;
                 }
                 // Visitors may not have existed when CityLife was installed without ordinary people.
-                int count=0;foreach(var a in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))if(a.seated)count++;
+                int count=0;foreach(var a in Object.FindObjectsByType<CityLifeAgent>())if(a.seated)count++;
                 if(count==0)for(int i=0;i<4;i++)
                 {
                     float x=i<2?-3.9f:3.9f;int side=i%2==0?-1:1;
@@ -99,10 +99,10 @@ namespace Dimari.Editor
         }
         static int EnsureWalkers(List<GameObject> pool)
         {
-            foreach(var agent in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
+            foreach(var agent in Object.FindObjectsByType<CityLifeAgent>())
                 if(!agent.vehicle&&!agent.seated&&agent.graph!=null&&agent.gameObject.scene==SceneManager.GetActiveScene())return 0;
             CityLifeGraph graph=null;
-            foreach(var candidate in Object.FindObjectsByType<CityLifeGraph>(FindObjectsSortMode.None))
+            foreach(var candidate in Object.FindObjectsByType<CityLifeGraph>())
                 if(candidate.name=="Sidewalk graph"&&candidate.gameObject.scene==SceneManager.GetActiveScene())graph=candidate;
             if(graph==null||graph.nodes==null)return 0;
             int added=0;var used=new List<Vector3>();

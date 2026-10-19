@@ -51,7 +51,7 @@ namespace Dimari.Cinematics
         static void SceneLoaded(Scene scene, LoadSceneMode mode) { EnsureInstalled(); }
         static void EnsureInstalled()
         {
-            foreach(var story in FindObjectsByType<DonsportReceptionCutscene>(FindObjectsSortMode.None))
+            foreach(var story in FindObjectsByType<DonsportReceptionCutscene>())
             {
                 if(story.maybeBaby==null)continue;
                 var face=story.maybeBaby.GetComponent<DonsportPhotoFace>();

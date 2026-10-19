@@ -87,7 +87,7 @@ namespace Dimari.Editor
         static bool FindSite(Vector3 origin,out Site chosen)
         {
             chosen=default;var candidates=new List<Site>();
-            foreach(var graph in Object.FindObjectsByType<CityLifeGraph>(FindObjectsSortMode.None))
+            foreach(var graph in Object.FindObjectsByType<CityLifeGraph>())
             {
                 if(graph.name!="Road graph"||graph.nodes==null||graph.gameObject.scene!=SceneManager.GetActiveScene())continue;
                 for(int i=0;i<graph.nodes.Length;i++)

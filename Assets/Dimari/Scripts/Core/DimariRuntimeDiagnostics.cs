@@ -163,7 +163,7 @@ namespace Dimari.Core
 
         static void ForceHighestDetail()
         {
-            LODGroup[] groups = Object.FindObjectsByType<LODGroup>(FindObjectsSortMode.None);
+            LODGroup[] groups = Object.FindObjectsByType<LODGroup>();
             foreach (var group in groups) if (group != null) group.ForceLOD(0);
             QualitySettings.lodBias = Mathf.Max(QualitySettings.lodBias, 2f);
             Debug.Log("[Dimari] F10: LOD0 для " + groups.Length + " групп, lodBias=" + QualitySettings.lodBias.ToString("F1"));
@@ -174,7 +174,7 @@ namespace Dimari.Core
             giants.Clear();
             Camera cam = Camera.main;
             Vector3 origin = cam != null ? cam.transform.position : Vector3.zero;
-            foreach (var renderer in Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))
+            foreach (var renderer in Object.FindObjectsByType<Renderer>())
             {
                 if (renderer == null || !renderer.enabled) continue;
                 Bounds bounds = renderer.bounds;

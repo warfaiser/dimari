@@ -61,7 +61,7 @@ namespace Dimari.Editor
             // Warm local lighting does not overwrite city ambience or shared assets.
             foreach(Light old in pizza.GetComponentsInChildren<Light>())if(old.name=="Neutral interior lamp")
             {Undo.RecordObject(old,"Brighten interior");old.intensity=1.1f;old.range=4.8f;old.color=new Color(1,0.95f,0.86f);}
-            foreach(Renderer r in Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))
+            foreach(Renderer r in Object.FindObjectsByType<Renderer>())
             {
                 var person=r.GetComponentInParent<CityLifeAgent>();
                 if(person==null||person.vehicle||r.gameObject.scene!=pizza.scene)continue;
@@ -76,7 +76,7 @@ namespace Dimari.Editor
                 Undo.RecordObject(r,"Person material");r.sharedMaterials=slots;
             }
             int guests=0;
-            foreach(CityLifeAgent guest in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
+            foreach(CityLifeAgent guest in Object.FindObjectsByType<CityLifeAgent>())
             {
                 if(!guest.seated||guest.gameObject.scene!=pizza.scene||guest.GetComponent<PizzaGuestEating>()!=null)continue;
                 Vector3 local=pizza.transform.InverseTransformPoint(guest.transform.position);if(Mathf.Abs(local.x)>6||Mathf.Abs(local.z)>5)continue;

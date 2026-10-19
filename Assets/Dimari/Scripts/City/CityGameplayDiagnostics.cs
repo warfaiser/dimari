@@ -76,14 +76,14 @@ namespace Dimari.City
                 b.AppendLine("Player capsule="+Path(capsule.transform)+" enabled="+capsule.enabled);
             foreach(var script in GetComponents<MonoBehaviour>())if(script!=null)b.AppendLine("Player component: "+script.GetType().Name+" enabled="+script.enabled);
             int walkers=0,cars=0,nearWalk=0,nearCars=0;
-            foreach(var agent in FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
+            foreach(var agent in FindObjectsByType<CityLifeAgent>())
             {
                 if(agent.gameObject.scene!=scene||agent.seated||agent.graph==null)continue;
                 bool near=Vector3.Distance(transform.position,agent.transform.position)<80;
                 if(agent.vehicle){cars++;if(near)nearCars++;}else{walkers++;if(near)nearWalk++;}
             }
             b.AppendLine("Street pedestrians="+walkers+" near80m="+nearWalk+" traffic="+cars+" near80m="+nearCars);
-            foreach(var graph in FindObjectsByType<CityLifeGraph>(FindObjectsSortMode.None))
+            foreach(var graph in FindObjectsByType<CityLifeGraph>())
             {if(graph.gameObject.scene!=scene)continue;int linked=0;if(graph.nodes!=null)foreach(var n in graph.nodes)if(n!=null&&n.next!=null&&n.next.Length>0)linked++;b.AppendLine("Graph "+graph.name+" nodes="+(graph.nodes!=null?graph.nodes.Length:0)+" linked="+linked);}
             foreach(var hit in Physics.RaycastAll(transform.position+Vector3.up*1.8f,Vector3.down,6,~0,QueryTriggerInteraction.Ignore))
             {

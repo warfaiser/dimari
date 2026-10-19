@@ -60,7 +60,7 @@ namespace Dimari.Atmosphere
             foreach (Terrain terrain in Terrain.activeTerrains)
                 _skyFloor = Mathf.Max(_skyFloor, terrain.transform.position.y + terrain.terrainData.bounds.max.y);
             // Static cliffs can rise well above the terrain. Use collider bounds conservatively.
-            foreach (Collider collider in FindObjectsByType<Collider>(FindObjectsSortMode.None))
+            foreach (Collider collider in FindObjectsByType<Collider>())
             {
                 if (collider.isTrigger || collider.GetComponentInParent<Dimari.Player.ForestPlayerController>() != null) continue;
                 if (Vector3.Distance(new Vector3(collider.bounds.center.x, _center.y, collider.bounds.center.z), _center) < maximumRadius + 100f)

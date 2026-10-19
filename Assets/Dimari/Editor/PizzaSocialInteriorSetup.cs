@@ -46,7 +46,7 @@ namespace Dimari.Editor
                 int repaired=Repair(pizza.transform);
                 if(pizza.GetComponent<PizzaInteriorVisibility>()==null)Undo.AddComponent<PizzaInteriorVisibility>(pizza);
                 var guests=new List<CityLifeAgent>();
-                foreach(var guest in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
+                foreach(var guest in Object.FindObjectsByType<CityLifeAgent>())
                 {
                     if(!guest.seated||guest.gameObject.scene!=pizza.scene)continue;
                     Vector3 local=pizza.transform.InverseTransformPoint(SeatAnchor(guest));if(Mathf.Abs(local.x)<6&&Mathf.Abs(local.z)<5)guests.Add(guest);
@@ -90,7 +90,7 @@ namespace Dimari.Editor
                     Dining(guest,group.transform,pizza.transform,i);
                 }
                 CityAmbientConversations conversations=null;
-                foreach(var candidate in Object.FindObjectsByType<CityAmbientConversations>(FindObjectsSortMode.None))if(candidate.gameObject.scene==pizza.scene){conversations=candidate;break;}
+                foreach(var candidate in Object.FindObjectsByType<CityAmbientConversations>())if(candidate.gameObject.scene==pizza.scene){conversations=candidate;break;}
                 if(conversations==null){var go=new GameObject("Pizza conversations");go.transform.SetParent(pizza.transform,false);Undo.RegisterCreatedObjectUndo(go,"Cafe conversations");Undo.AddComponent<CityAmbientConversations>(go);}
                 Undo.CollapseUndoOperations(undo);EditorSceneManager.MarkSceneDirty(pizza.scene);AssetDatabase.SaveAssets();
                 string report="[Dimari] Пиццерия: обработано поверхностей "+repaired+", новых посетителей "+added+", мест до 12. Проверьте Play, затем сохраните сцену Ctrl+S. Новые темы — субтитры; новая озвучка не включена.";

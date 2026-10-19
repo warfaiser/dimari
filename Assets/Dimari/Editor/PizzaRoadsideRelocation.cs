@@ -44,7 +44,7 @@ namespace Dimari.Editor
             Undo.IncrementCurrentGroup();int group=Undo.GetCurrentGroup();Undo.SetCurrentGroupName("Move pizza roadside and remove selected shop");
             Matrix4x4 oldInverse=pizza.transform.worldToLocalMatrix;Quaternion oldRotation=pizza.transform.rotation;
             var visitors=new List<CityLifeAgent>();var points=new List<Vector3>();var rotations=new List<Quaternion>();
-            foreach(var guest in Object.FindObjectsByType<CityLifeAgent>(FindObjectsSortMode.None))
+            foreach(var guest in Object.FindObjectsByType<CityLifeAgent>())
             {
                 if(!guest.seated||guest.gameObject.scene!=pizza.scene||guest.transform.IsChildOf(pizza.transform))continue;
                 Vector3 local=oldInverse.MultiplyPoint3x4(guest.transform.position);
@@ -53,7 +53,7 @@ namespace Dimari.Editor
             }
             // Plate positions are stored in world space; move them too, along with props parented to pizza.
             var meals=new List<PizzaGuestEating>();var plates=new List<Vector3>();
-            foreach(var meal in Object.FindObjectsByType<PizzaGuestEating>(FindObjectsSortMode.None))
+            foreach(var meal in Object.FindObjectsByType<PizzaGuestEating>())
             {
                 if(meal.gameObject.scene!=pizza.scene)continue;
                 Vector3 local=oldInverse.MultiplyPoint3x4(meal.platePosition);

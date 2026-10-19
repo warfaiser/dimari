@@ -78,7 +78,7 @@ namespace Dimari.Editor
             var cells=new Dictionary<Vector2Int,Vector3>();
             int scanned=0,matched=0;var names=new HashSet<string>();
             var pizzaReference=GameObject.Find("Dimari_PizzaExpress24");
-            foreach(MeshFilter filter in Object.FindObjectsByType<MeshFilter>(FindObjectsSortMode.None))
+            foreach(MeshFilter filter in Object.FindObjectsByType<MeshFilter>())
             {
                 if(filter.gameObject.scene!=root.gameObject.scene||filter.transform.IsChildOf(root)||filter.GetComponentInParent<CityLifeAgent>()!=null)continue;
                 bool generated=false;for(Transform t=filter.transform;t!=null;t=t.parent)if(t.name=="Dimari_PizzaExpress24"||t.name=="Dimari_Donsport")generated=true;

@@ -43,8 +43,8 @@ namespace Dimari.Story
         public GameObject shipPrefab;
         [Header("Большой корабль и разговор с капитаном")]
         [Min(8.5f)] public float shipModelSize = 28f;
-        [Tooltip("Строить встроенный процедурный корабль и не искать префабы в проекте. Включите, если импортированный ассет оказался заглушкой.")]
-        public bool useProceduralShip = false;
+        [Tooltip("Строить встроенный корабль. Выключите, чтобы использовать префаб из поля Ship Prefab; префабы-заглушки всё равно отклоняются проверкой формы.")]
+        public bool useProceduralShip = true;
         public bool humanSizedCaptain = true;
         public AudioClip heroCaptainQuestion;
         public AudioClip pirateCaptainAnswer;
@@ -133,7 +133,6 @@ namespace Dimari.Story
         private bool _hasPickedUpTablet = false;
         private bool _isHoldingTabletInHands = false;
         private float _holdTabletBlend = 0f;
-        private bool _hasPickedUpBackpack = false;
 
         // Состояние анимации поднятия предмета (рюкзака / планшета)
         private bool _isPlayingPickupAnim = false;
@@ -368,7 +367,6 @@ namespace Dimari.Story
                 DestroyImmediate(_equippedTabletTransform.gameObject);
                 _equippedTabletTransform = null;
             }
-            _hasPickedUpBackpack = false;
             _hasPickedUpTablet = false;
             _isHoldingTabletInHands = false;
             _holdTabletBlend = 0f;
@@ -502,6 +500,10 @@ namespace Dimari.Story
         /// </summary>
         private void CreateShorelinePierShipAndNpc(Transform root, Vector3 shorePos, Vector3 forward, Vector3 right)
         {
+            // A placeholder saved into the scene in an earlier session would sit next to the
+            // real ship forever. Remove it before the pier is built.
+            PurgeShipPlaceholderObjects();
+
             Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
 
             Material woodMat = new Material(litShader);
@@ -1191,8 +1193,18 @@ namespace Dimari.Story
             if (useProceduralShip) return false;
             if (shipPrefab != null)
             {
-                PrepareShipModel(Instantiate(shipPrefab, parent));
-                return true;
+                // A serialized prefab bypassed the asset search, and StylShip_Box was assigned
+                // here by an earlier version. The box must never become the ship again.
+                GameObject assigned = Instantiate(shipPrefab, parent);
+                if (ShipModelIsUsable(assigned, out string assignedReason))
+                {
+                    PrepareShipModel(assigned);
+                    return true;
+                }
+                Debug.LogWarning("[Dimari] Префаб корабля из поля Ship Prefab отклонён: " + assignedReason
+                    + " Строю встроенный корабль. Поле Ship Prefab можно очистить.", this);
+                Destroy(assigned);
+                return false;
             }
 #if UNITY_EDITOR
             string[] filters = new string[] { "t:Prefab", "t:Model" };
@@ -1275,6 +1287,13 @@ namespace Dimari.Story
             if (bestShip != null)
             {
                 GameObject instance = Instantiate(bestShip, parent);
+                if (!ShipModelIsUsable(instance, out string instanceReason))
+                {
+                    Debug.LogWarning("[Dimari] Загруженный корабль отклонён: " + instanceReason
+                        + " Путь: " + bestPath + ". Строю встроенный корабль.", this);
+                    Destroy(instance);
+                    return false;
+                }
                 PrepareShipModel(instance);
 
                 Debug.Log($"[Dimari] Загружен 3D-корабль из ассета: {bestPath}");
@@ -1282,6 +1301,58 @@ namespace Dimari.Story
             }
 #endif
             return false;
+        }
+
+        /// <summary>Destroys StylShip_Box-style leftovers that were saved into the scene.</summary>
+        private static void PurgeShipPlaceholderObjects()
+        {
+            foreach (MeshFilter filter in FindObjectsByType<MeshFilter>(FindObjectsInactive.Include))
+            {
+                if (filter == null || filter.sharedMesh == null) continue;
+                string meshName = filter.sharedMesh.name.ToLowerInvariant().Replace(" ", "").Replace("_", "");
+                if (!meshName.Contains("stylshipbox") && !meshName.Contains("shipbox") && !meshName.Contains("shipcollider")) continue;
+                Transform victim = filter.transform;
+                while (victim.parent != null && !victim.name.StartsWith("Quest3_") && !victim.name.StartsWith("Dimari_StoryObjects"))
+                    victim = victim.parent;
+                Debug.LogWarning("[Dimari] Найдена сохранённая в сцене заглушка корабля «" + victim.name
+                    + "» (меш " + filter.sharedMesh.name + ") — удалена.", victim);
+                Destroy(victim.gameObject);
+            }
+        }
+
+        /// <summary>
+        /// Runtime-safe shape check for an instantiated model. StylShip_Box is a 19.8 m cube
+        /// with a BoxCollider: square in plan, so it can never pass as a hull.
+        /// </summary>
+        private static bool ShipModelIsUsable(GameObject instance, out string reason)
+        {
+            reason = "";
+            if (instance == null) { reason = "объект не создан."; return false; }
+            if (!instance.activeSelf) instance.SetActive(true);
+            string rootName = instance.name.ToLowerInvariant();
+            if (rootName.Contains("box") || rootName.Contains("collider") || rootName.Contains("proxy") ||
+                rootName.Contains("trigger") || rootName.Contains("volume") || rootName.Contains("placeholder"))
+            { reason = "имя объекта «" + instance.name + "» — заглушка."; return false; }
+
+            Renderer[] renderers = instance.GetComponentsInChildren<Renderer>(true);
+            if (renderers.Length == 0) { reason = "в модели нет видимых деталей."; return false; }
+            Bounds bounds = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++) bounds.Encapsulate(renderers[i].bounds);
+            Vector3 size = bounds.size;
+            float length = Mathf.Max(size.x, size.z);
+            float width = Mathf.Min(size.x, size.z);
+            if (length < 2f || width < 0.3f) { reason = "модель слишком маленькая (" + size.ToString("F1") + ")."; return false; }
+            if (size.y > length * 0.95f) { reason = "высота больше длины — это коробка, а не корпус (" + size.ToString("F1") + ")."; return false; }
+            if (length / Mathf.Max(0.01f, width) < 1.45f)
+            { reason = "в плане почти квадрат (" + size.ToString("F1") + "), похоже на коллайдер-заглушку."; return false; }
+            if (renderers.Length == 1)
+            {
+                MeshFilter filter = renderers[0].GetComponent<MeshFilter>();
+                int triangles = filter != null && filter.sharedMesh != null ? filter.sharedMesh.triangles.Length / 3 : 0;
+                if (triangles > 0 && triangles < 1500)
+                { reason = "одна простая деталь (" + triangles + " треугольников) — это ящик."; return false; }
+            }
+            return true;
         }
 
 #if UNITY_EDITOR
@@ -2482,7 +2553,6 @@ namespace Dimari.Story
 
                     if (stepId == "find_backpack")
                     {
-                        _hasPickedUpBackpack = true;
                         _equippedBackpackTransform = itemTransform;
                         _equippedBackpackTransform.localScale *= 0.78f;
                         ShowStatusToast("Рюкзак поднят и надет на спину!");
