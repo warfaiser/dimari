@@ -4,6 +4,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Dimari.Story;
 
 namespace Dimari.Editor
 {
@@ -98,6 +99,72 @@ namespace Dimari.Editor
             EditorUtility.DisplayDialog("LOD-диагностика",
                 "LOD-групп: " + groups.Length + "\nПохожих на billboard: " + billboardLike
                 + "\n\nПодробности с путями объектов — в Console.", "OK");
+        }
+
+        [MenuItem("Dimari/Диагностика — корабль, капитан и точка обрыва")]
+        public static void CaptainCheck()
+        {
+            var manager = Object.FindAnyObjectByType<StoryQuestManager>(FindObjectsInactive.Include);
+            var report = new StringBuilder();
+            Camera camera = Camera.main;
+            report.AppendLine("[Dimari] Проверка сцены капитана");
+            if (manager == null)
+            {
+                report.AppendLine("StoryQuestManager: НЕТ в открытой сцене.");
+            }
+            else
+            {
+                Transform cliff = manager.cliffArrivalPoint;
+                report.AppendLine(cliff == null
+                    ? "Точка обрыва: НЕ назначена (Cliff Arrival Point)."
+                    : "Точка обрыва: " + Path(cliff) + " @ " + cliff.position.ToString("F1"));
+                if (cliff != null)
+                {
+                    bool ground = Physics.Raycast(cliff.position + Vector3.up * 3f, Vector3.down,
+                        out RaycastHit groundHit, 40f, ~0, QueryTriggerInteraction.Ignore);
+                    report.AppendLine(ground
+                        ? "  земля под точкой: " + groundHit.point.y.ToString("F1") + " | уклон "
+                          + Vector3.Angle(groundHit.normal, Vector3.up).ToString("F0") + "°"
+                        : "  земля под точкой: НЕ найдена");
+                    int blockers = 0;
+                    foreach (var collider in Physics.OverlapSphere(cliff.position + Vector3.up * 1.2f, 2f, ~0, QueryTriggerInteraction.Ignore))
+                    {
+                        if (collider == null || collider.isTrigger) continue;
+                        if (collider.transform.IsChildOf(manager.transform)) continue;
+                        report.AppendLine("  перекрытие: " + Path(collider.transform));
+                        blockers++;
+                    }
+                    if (blockers == 0) report.AppendLine("  перекрытий у точки нет");
+                }
+            }
+            Transform ship = null;
+            foreach (var candidate in Object.FindObjectsByType<Transform>(FindObjectsSortMode.None))
+            {
+                if (candidate.name == "Dimari_WaterShip" || candidate.name == "AssetStore_Ship_Model") { ship = candidate; break; }
+            }
+            if (ship == null) report.AppendLine("Корабль в сцене: нет (создаётся при старте игры).");
+            else
+            {
+                Renderer[] renderers = ship.GetComponentsInChildren<Renderer>(true);
+                if (renderers.Length == 0) report.AppendLine("Корабль: " + Path(ship) + " | рендереров нет");
+                else
+                {
+                    Bounds bounds = renderers[0].bounds;
+                    for (int i = 1; i < renderers.Length; i++) bounds.Encapsulate(renderers[i].bounds);
+                    report.AppendLine("Корабль: " + Path(ship) + " | габариты " + bounds.size.ToString("F1")
+                        + " | масштаб " + ship.localScale.ToString("F1"));
+                }
+            }
+            if (camera != null && Physics.Raycast(camera.ViewportPointToRay(new Vector3(0.5f, 0.5f)),
+                out RaycastHit center, 500f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                report.AppendLine("Под прицелом камеры: " + Path(center.transform) + " | "
+                    + center.distance.ToString("F1") + " м");
+            }
+            Debug.Log(report.ToString());
+            EditorUtility.DisplayDialog("Корабль, капитан и точка обрыва",
+                "Отчёт записан в Console (окно Console должно быть открыто).\n\n"
+                + "Если в Play коричневая стена — нажмите F9 и F6: они покажут точное имя объекта.", "OK");
         }
 
         static string Path(Transform t)

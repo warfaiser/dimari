@@ -212,6 +212,24 @@ namespace Dimari.Core
                     + " | " + (centerMaterial != null && centerMaterial.shader != null ? centerMaterial.shader.name : "шейдер НЕТ"));
             }
             else text.AppendLine("ПОД ПРИЦЕЛОМ: пусто");
+            if (manager != null && manager.ShipTransform != null)
+            {
+                Transform ship = manager.ShipTransform;
+                text.AppendLine("КОРАБЛЬ: " + Short(Path(ship), 56)
+                    + " | масштаб " + ship.localScale.ToString("F2")
+                    + (manager.ShipDeckMeasured
+                        ? " | палуба " + manager.MeasuredDeckLocalY.ToString("F2")
+                          + " | габариты " + manager.MeasuredShipLocalBounds.size.ToString("F1")
+                        : " | палуба не измерена"));
+                Transform captain = manager.CaptainTransform;
+                if (captain != null)
+                {
+                    Vector3 local = ship.InverseTransformPoint(captain.position);
+                    text.AppendLine("КАПИТАН: локально " + local.ToString("F2")
+                        + " | над палубой " + (manager.ShipDeckMeasured ? (local.y - manager.MeasuredDeckLocalY).ToString("F2") : "?") + " м");
+                }
+            }
+            else if (manager != null) text.AppendLine("КОРАБЛЬ: ещё не создан (дойти до берега)");
             text.AppendLine("Крупные объекты рядом (6+ м), по размеру:");
             int index = 0;
             foreach (var candidate in giants)
