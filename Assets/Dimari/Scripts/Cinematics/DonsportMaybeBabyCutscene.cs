@@ -435,6 +435,13 @@ namespace Dimari.Cinematics
         }
         static void DestroyMaterial(Material m) { if (m != null) UnityEngine.Object.Destroy(m); }
 
+        public void Abort()
+        {
+            if (!running) return;
+            StopAllCoroutines();
+            Release();
+        }
+
         void OnDisable() { StopAllCoroutines(); Release(); }
 
         void OnGUI()

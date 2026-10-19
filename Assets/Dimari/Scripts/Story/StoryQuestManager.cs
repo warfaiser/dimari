@@ -97,6 +97,11 @@ namespace Dimari.Story
 
         public bool IsMenuOpen => _isMenuOpen;
         public bool HasGameStarted => _hasGameStarted;
+        public bool IsTabletViewerOpen => _isTabletViewerOpen;
+        public bool IsHudVisible => _showHUD;
+        /// <summary>Frame in which the normal ESC handler ran; used by the fallback handler to avoid double toggling.</summary>
+        public static int LastMenuHotkeyFrame { get; private set; } = -1;
+        public bool HasGameStarted => _hasGameStarted;
 
         private string _currentSubtitle = "";
         private float _subtitleTimer = 0f;
@@ -1559,6 +1564,7 @@ namespace Dimari.Story
 
             if (DimariInput.IsPauseMenuPressed())
             {
+                LastMenuHotkeyFrame = Time.frameCount;
                 if (_isTabletViewerOpen)
                 {
                     PutTabletInBackpack();
@@ -2972,6 +2978,68 @@ namespace Dimari.Story
                 _cameraController.IsMenuCameraActive = true;
                 _cameraController.UpdateCharacterMeshVisibility(false);
             }
+        }
+
+        /// <summary>Closes the pause menu and restores gameplay, even if the normal resume path is blocked.</summary>
+        public void ForceCloseMenu()
+        {
+            _isMenuOpen = false;
+            SyncStoryVoiceMenuState();
+            _isSettingsOpen = false;
+            _chapterSelectionOpen = false;
+            Time.timeScale = 1f;
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = false;
+                _cameraController.IsCutsceneControlled = false;
+                _cameraController.UpdateCharacterMeshVisibility(_cameraController.isFirstPerson);
+            }
+            if (_player != null && !_isPlayingEndingCutscene && (_director == null || !_director.IsPlayingCutscene))
+            {
+                _player.IsControlEnabled = true;
+            }
+        }
+
+        /// <summary>Emergency F8 recovery: ends any paused/cutscene stuck state and returns the player to gameplay.</summary>
+        public void RecoverGameplay()
+        {
+            if (_player == null) _player = FindAnyObjectByType<ForestPlayerController>();
+            if (_cameraController == null) _cameraController = FindAnyObjectByType<ForestCameraController>();
+            if (_director == null) _director = FindAnyObjectByType<ForestAwakeningDirector>();
+            if (_director != null)
+            {
+                _director.StopAllCoroutines();
+                _director.enabled = false;
+                _director.FinishAwakeningImmediately();
+            }
+            var maybeBaby = FindAnyObjectByType<Dimari.Cinematics.DonsportMaybeBabyCutscene>();
+            if (maybeBaby != null) maybeBaby.Abort();
+            var reception = FindAnyObjectByType<Dimari.Cinematics.DonsportReceptionCutscene>();
+            if (reception != null) reception.Abort();
+            _hasGameStarted = true;
+            _showHUD = true;
+            _isMenuOpen = false;
+            _isSettingsOpen = false;
+            _chapterSelectionOpen = false;
+            _isTabletViewerOpen = false;
+            _isPlayingPickupAnim = false;
+            Time.timeScale = 1f;
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            if (_cameraController != null)
+            {
+                _cameraController.IsMenuCameraActive = false;
+                _cameraController.IsCutsceneControlled = false;
+                _cameraController.UpdateCharacterMeshVisibility(_cameraController.isFirstPerson);
+            }
+            if (_player != null)
+            {
+                _player.IsControlEnabled = true;
+                _player.StopLocomotionAnimation();
+            }
+            ShowStatusToast("Управление и HUD восстановлены (F8).");
         }
 
         public void ResumeFromPause()

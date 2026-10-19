@@ -138,6 +138,14 @@ namespace Dimari.Cinematics
             if (cam != null) { cam.transform.SetPositionAndRotation(oldCameraPosition, oldCameraRotation); cam.fieldOfView = oldFov; }
             if (heroRenderers != null) for (int i = 0; i < heroRenderers.Length; i++) if (heroRenderers[i] != null) heroRenderers[i].enabled = heroVisibility[i];
         }
+        public void Abort()
+        {
+            if (!running) return;
+            StopAllCoroutines();
+            Release();
+            ClearPrompt();
+        }
+
         void OnDisable() { StopAllCoroutines(); Release(); ClearPrompt(); }
         void OnGUI()
         {
