@@ -423,6 +423,8 @@ namespace Dimari.Story
             forward.Normalize();
             right = Vector3.Cross(Vector3.up, forward).normalized;
 
+            ResolveCliffArrivalPoint();
+
             GameObject storyRoot = new GameObject("Dimari_StoryObjects_V2");
 
             // =========================================================================
@@ -472,7 +474,14 @@ namespace Dimari.Story
             // =========================================================================
             // 3. ВЫХОД К ВОДЕ, ПРИЧАЛ, КОРАБЛЬ И NPC-ПЕРСОНАЖ (Задача 3 + Кат-сцена)
             // =========================================================================
-            Vector3 shorePos = cliffArrivalPoint != null ? cliffArrivalPoint.position : GetGroundPoint(pPos + forward * 15.5f, pPos.y);
+            if (cliffArrivalPoint == null)
+            {
+                // No cliff marker means no cutscene: it must never play next to the backpack.
+                Debug.LogWarning("[Dimari] Метка обрыва не найдена, поэтому сцена у воды не строится. "
+                    + "Поставьте объект на краю карты и назначьте его в поле Cliff Arrival Point.", this);
+                return;
+            }
+            Vector3 shorePos = cliffArrivalPoint.position;
             if (cliffArrivalPoint != null)
             {
                 // The marker keeps the rotation it has in the scene: the user placed it at the
@@ -497,14 +506,19 @@ namespace Dimari.Story
             {
                 GameObject marker = new GameObject("Dimari_CliffCutsceneApproachMarker");
                 marker.transform.SetParent(storyRoot.transform, true);
-                Vector3 approachForward = _player != null ? _player.transform.forward : Vector3.forward;
-                approachForward = Vector3.ProjectOnPlane(approachForward, Vector3.up).normalized;
-                // Measure from the tablet's original ground position, not the player spawn.
-                marker.transform.position = GetGroundPoint(
-                    tabletPos + approachForward * endingMarkerDistance, tabletPos.y);
+                // The cutscene starts right at the cliff edge, on the upper platform where the
+                // descent begins. It must never start next to the backpack or the tablet.
+                Vector3 cliffForward = Vector3.ProjectOnPlane(cliffArrivalPoint.forward, Vector3.up);
+                if (cliffForward.sqrMagnitude < 0.01f) cliffForward = Vector3.forward;
+                cliffForward.Normalize();
+                Vector3 approach = cliffArrivalPoint.position - cliffForward * 1.6f;
+                approach.y = GetGroundPoint(approach, cliffArrivalPoint.position.y).y + 0.05f;
+                marker.transform.position = approach;
+                marker.transform.rotation = Quaternion.LookRotation(cliffForward, Vector3.up);
                 _endingApproachMarker = marker.transform;
                 // The cliff is a cinematic destination, not an interactable across the map.
                 shoreInteract.enabled = false;
+                CreateCliffBeacon(marker.transform, cliffForward);
             }
         }
 
@@ -659,6 +673,111 @@ namespace Dimari.Story
             BoxCollider triggerCol = root.gameObject.AddComponent<BoxCollider>();
             triggerCol.center = new Vector3(0f, 1.0f, 0.5f);
             triggerCol.size = new Vector3(2.8f, 2.2f, 2.8f);
+        }
+
+        /// <summary>
+        /// Finds the authored cliff marker in the scene. If the field is empty, the marker is created
+        /// automatically on the edge of the map, so the cutscene never happens next to the backpack.
+        /// </summary>
+        private void ResolveCliffArrivalPoint()
+        {
+            if (cliffArrivalPoint != null) return;
+
+            foreach (Transform candidate in FindObjectsByType<Transform>(FindObjectsInactive.Include))
+            {
+                if (candidate == null) continue;
+                string name = candidate.name.ToLowerInvariant();
+                if (!name.Contains("cliff") && !name.Contains("обрыв")) continue;
+                if (name.Contains("rock") || name.Contains("preview") || name.Contains("marker")) continue;
+                cliffArrivalPoint = candidate;
+                Debug.Log("[Dimari] Метка обрыва найдена в сцене: " + candidate.name + " " + candidate.position.ToString("F1"), candidate);
+                return;
+            }
+
+            Vector3 start = _player != null ? _player.transform.position : transform.position;
+            if (!TryFindMapEdge(start, out Vector3 edge, out Vector3 outward))
+            {
+                Debug.LogWarning("[Dimari] Край карты не найден. Назначьте метку обрыва вручную в поле Cliff Arrival Point.", this);
+                return;
+            }
+            GameObject created = new GameObject("CliffArrivalPoint_Auto");
+            created.transform.position = edge;
+            created.transform.rotation = Quaternion.LookRotation(outward, Vector3.up);
+            cliffArrivalPoint = created.transform;
+            Debug.LogWarning("[Dimari] Метка обрыва не была назначена. Создана на краю карты: "
+                + edge.ToString("F1") + ", смотрит в " + outward.ToString("F2")
+                + ". Перетащите CliffArrivalPoint_Auto в поле Cliff Arrival Point, чтобы закрепить.", created);
+        }
+
+        /// <summary>Walks outward from the spawn and returns the last ground point before the void.</summary>
+        private bool TryFindMapEdge(Vector3 start, out Vector3 point, out Vector3 outward)
+        {
+            point = Vector3.zero;
+            outward = Vector3.forward;
+            float bestScore = float.MinValue;
+            for (int i = 0; i < 24; i++)
+            {
+                Vector3 direction = Quaternion.Euler(0f, i * 15f, 0f) * Vector3.forward;
+                Vector3 lastGround = start;
+                bool foundVoid = false;
+                float voidDistance = 0f;
+                for (float distance = 8f; distance <= 320f; distance += 4f)
+                {
+                    Vector3 probe = start + direction * distance;
+                    if (!TrySampleGround(probe, out Vector3 ground)) { foundVoid = distance > 20f; voidDistance = distance; break; }
+                    lastGround = ground;
+                }
+                if (!foundVoid) continue;
+                // Prefer a long walk with a real drop over the sea, not a small hole in the rocks.
+                if (lastGround.y < oceanLevel + 2f) continue;
+                float score = voidDistance * 0.5f + (lastGround.y - oceanLevel) * 0.05f;
+                if (score <= bestScore) continue;
+                bestScore = score;
+                point = lastGround;
+                outward = direction;
+            }
+            return bestScore > float.MinValue;
+        }
+
+        private bool TrySampleGround(Vector3 position, out Vector3 ground)
+        {
+            ground = position;
+            float best = float.NegativeInfinity;
+            foreach (RaycastHit hit in Physics.RaycastAll(position + Vector3.up * 250f, Vector3.down, 600f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (_player != null && hit.transform.IsChildOf(_player.transform)) continue;
+                if (_shipTransform != null && hit.transform.IsChildOf(_shipTransform)) continue;
+                if (hit.normal.y < 0.45f) continue;
+                if (hit.point.y > best) { best = hit.point.y; ground = hit.point; }
+            }
+            return best > float.NegativeInfinity;
+        }
+
+        /// <summary>Небольшой ориентир на краю обрыва, чтобы метку было видно издалека.</summary>
+        private void CreateCliffBeacon(Transform marker, Vector3 cliffForward)
+        {
+            Shader litShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            if (litShader == null) return;
+            Material flameMat = new Material(litShader);
+            Color warm = new Color(1f, 0.78f, 0.34f, 1f);
+            SetMatColor(flameMat, warm);
+            if (flameMat.HasProperty("_EmissionColor"))
+            {
+                flameMat.EnableKeyword("_EMISSION");
+                flameMat.SetColor("_EmissionColor", warm * 3f);
+            }
+            CreatePart(PrimitiveType.Cylinder, "CliffBeaconPost", marker, new Vector3(-1.2f, 0.8f, 0f),
+                Quaternion.identity, new Vector3(0.09f, 0.8f, 0.09f), flameMat);
+            CreatePart(PrimitiveType.Sphere, "CliffBeaconLight", marker, new Vector3(-1.2f, 1.75f, 0f),
+                Quaternion.identity, new Vector3(0.3f, 0.3f, 0.3f), flameMat);
+            GameObject lightObject = new GameObject("CliffBeaconLightSource");
+            lightObject.transform.SetParent(marker, false);
+            lightObject.transform.localPosition = new Vector3(-1.2f, 1.9f, 0f);
+            Light beacon = lightObject.AddComponent<Light>();
+            beacon.type = LightType.Point;
+            beacon.color = warm;
+            beacon.range = 14f;
+            beacon.intensity = 3.2f;
         }
 
         /// <summary>
@@ -2131,7 +2250,7 @@ namespace Dimari.Story
             }
             if (!_hasReachedShip && _cliffInteraction != null && _endingApproachMarker != null && _player != null && _hasGameStarted &&
                 !_isMenuOpen && !_isPlayingEndingCutscene && !_isChapter2Reached && _hasPickedUpTablet &&
-                Vector3.Distance(_player.transform.position, _endingApproachMarker.position) <= endingMarkerRadius)
+                Vector3.Distance(_player.transform.position, _endingApproachMarker.position) <= Mathf.Max(endingMarkerRadius, 3f))
             {
                 CompleteQuestStep("rogovo_exit", "");
             }
@@ -2800,6 +2919,13 @@ namespace Dimari.Story
                     : (plainStart + (_player != null ? _player.transform.forward * 5.2f : Vector3.forward * 5.2f));
                 route = new List<Vector3> { plainStart, plainEnd };
             }
+            // Start the walk where the hero actually stands, so the cutscene looks continuous.
+            if (_player != null && route.Count >= 2)
+            {
+                Vector3 heroPos = _player.transform.position;
+                if (Vector3.Distance(heroPos, route[0]) <= 14f && Vector3.Distance(heroPos, route[0]) >= 0.6f)
+                    route.Insert(0, new Vector3(heroPos.x, route[0].y, heroPos.z));
+            }
             Vector3 walkStart = route[0];
             Vector3 walkEnd = route[route.Count - 1];
             float routeLength = 0f;
@@ -2818,6 +2944,13 @@ namespace Dimari.Story
             {
                 _player.transform.position = walkStart;
                 _player.transform.rotation = walkRot;
+                // The hero must be seen on screen: undo any first-person hiding of the model.
+                foreach (Renderer renderer in _player.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (renderer == null) continue;
+                    renderer.enabled = true;
+                    renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+                }
             }
 
             if (_endingApproachMarker != null && _mainCam != null)

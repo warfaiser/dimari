@@ -222,6 +222,120 @@ namespace Dimari.Editor
                 + "Если в Play коричневая стена — нажмите F9 и F6: они покажут точное имя объекта.", "OK");
         }
 
+        [MenuItem("Dimari/Корабль — назначить корабль из проекта автоматически")]
+        public static void AssignBestShipPrefab()
+        {
+            var candidates = new List<(GameObject prefab, string path, Vector3 size, string reject)>();
+            foreach (string filter in new[] { "t:Prefab", "t:Model" })
+            {
+                foreach (string guid in AssetDatabase.FindAssets(filter))
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(path)) continue;
+                    string lower = path.ToLowerInvariant();
+                    string file = System.IO.Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+                    bool shipName = lower.Contains("ship") || lower.Contains("boat") || lower.Contains("pirate") ||
+                                    lower.Contains("galleon") || lower.Contains("vessel") || lower.Contains("sail");
+                    if (!shipName) continue;
+                    if (file.Contains("box") || file.Contains("collider") || file.Contains("proxy") ||
+                        file.Contains("trigger") || file.Contains("volume") || file.Contains("lod") ||
+                        file.Contains("outline") || file.Contains("pivot") || file.Contains("anchor")) continue;
+                    if (file.Contains("barrel") || file.Contains("cannon") || file.Contains("crate") ||
+                        file.Contains("wheel") || file.Contains("mast") || file.Contains("rope") ||
+                        file.Contains("sail") && !file.Contains("ship")) continue;
+
+                    GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    if (prefab == null) continue;
+                    if (prefab.GetComponentInChildren<MeshRenderer>(true) == null) continue;
+
+                    GameObject probe = Object.Instantiate(prefab);
+                    probe.hideFlags = HideFlags.HideAndDontSave;
+                    string reject = "";
+                    Vector3 size = Vector3.zero;
+                    try
+                    {
+                        Renderer[] renderers = probe.GetComponentsInChildren<Renderer>(true);
+                        if (renderers.Length == 0) reject = "нет рендереров";
+                        else
+                        {
+                            Bounds bounds = renderers[0].bounds;
+                            for (int i = 1; i < renderers.Length; i++) bounds.Encapsulate(renderers[i].bounds);
+                            size = bounds.size;
+                            float length = Mathf.Max(size.x, size.z);
+                            float width = Mathf.Min(size.x, size.z);
+                            if (length < 2f) reject = "слишком маленький";
+                            else if (size.y > length * 0.95f) reject = "высота больше длины";
+                            else if (length / Mathf.Max(0.01f, width) < 1.3f) reject = "квадрат в плане";
+                        }
+                    }
+                    finally
+                    {
+                        Object.DestroyImmediate(probe);
+                    }
+                    candidates.Add((prefab, path, size, reject));
+                }
+            }
+
+            candidates.Sort((a, b) => ScoreShip(b.path, b.size).CompareTo(ScoreShip(a.path, a.size)));
+            var report = new StringBuilder();
+            report.AppendLine("[Dimari] Корабли в проекте: " + candidates.Count);
+            foreach (var candidate in candidates)
+            {
+                report.AppendLine((string.IsNullOrEmpty(candidate.reject) ? "  ✔ " : "  ✘ ") + candidate.path
+                    + " | " + candidate.size.ToString("F1")
+                    + (string.IsNullOrEmpty(candidate.reject) ? "" : " | " + candidate.reject));
+            }
+
+            GameObject best = null;
+            string bestPath = null;
+            foreach (var candidate in candidates)
+            {
+                if (!string.IsNullOrEmpty(candidate.reject)) continue;
+                best = candidate.prefab;
+                bestPath = candidate.path;
+                break;
+            }
+
+            if (best != null)
+            {
+                int assigned = 0;
+                foreach (var manager in Object.FindObjectsByType<StoryQuestManager>())
+                {
+                    var serialized = new SerializedObject(manager);
+                    var property = serialized.FindProperty("shipPrefab");
+                    if (property == null) continue;
+                    property.objectReferenceValue = best;
+                    serialized.FindProperty("forceBuiltInShip").boolValue = false;
+                    serialized.ApplyModifiedPropertiesWithoutUndo();
+                    EditorUtility.SetDirty(manager);
+                    assigned++;
+                }
+                report.AppendLine("Назначен корабль: " + bestPath + " (менеджеров: " + assigned + ").");
+                Debug.Log(report.ToString(), best);
+                EditorUtility.DisplayDialog("Dimari",
+                    "Назначен корабль:\n" + bestPath + "\n\nПолный список — в Console.", "OK");
+            }
+            else
+            {
+                report.AppendLine("Подходящий корабль не найден. Импортируйте модель и повторите.");
+                Debug.LogWarning(report.ToString());
+                EditorUtility.DisplayDialog("Dimari",
+                    "Подходящий корабль не найден. Полный список кандидатов — в Console.", "OK");
+            }
+        }
+
+        static float ScoreShip(string path, Vector3 size)
+        {
+            string lower = path.ToLowerInvariant();
+            float score = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
+            if (lower.EndsWith(".prefab")) score += 30f;
+            if (lower.Contains("pirate")) score += 60f;
+            if (lower.Contains("ship")) score += 40f;
+            if (lower.Contains("galleon") || lower.Contains("vessel")) score += 30f;
+            if (lower.Contains("box") || lower.Contains("preview")) score -= 100f;
+            return score;
+        }
+
         [MenuItem("Dimari/Корабль — превью сцены обрыва в Scene")]
         public static void PreviewCliffScene()
         {
