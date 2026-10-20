@@ -1431,6 +1431,46 @@ namespace Dimari.Story
             return found;
         }
 
+        /// <summary>Высота модели по её рендерерам (для сверки роста героя и капитана).</summary>
+        private static float RendererHeight(GameObject target, out float width)
+        {
+            width = 0f;
+            if (target == null) return 0f;
+            Renderer[] renderers = target.GetComponentsInChildren<Renderer>(true);
+            if (renderers.Length == 0) return 0f;
+            Bounds bounds = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                if (renderers[i] == null) continue;
+                bounds.Encapsulate(renderers[i].bounds);
+            }
+            width = Mathf.Max(bounds.size.x, bounds.size.z);
+            return bounds.size.y;
+        }
+
+        /// <summary>
+        /// Приводит рост капитана к росту героя: на модели с другим масштабом капитан иначе
+        /// оказывается вдвое выше или ниже.
+        /// </summary>
+        private void AlignCrewHeight()
+        {
+            if (_player == null || _npcTransform == null) return;
+            float heroHeight = RendererHeight(_player.gameObject, out _);
+            if (heroHeight < 1.0f) return;
+            float captainHeight = RendererHeight(_npcTransform.gameObject, out float captainWidth);
+            if (captainHeight < 0.2f) return;
+            float ratio = heroHeight / captainHeight;
+            if (ratio > 0.88f && ratio < 1.14f) return;
+            ratio = Mathf.Clamp(ratio, 0.55f, 1.9f);
+            _npcTransform.localScale *= ratio;
+            // После масштабирования модель может «утонуть» или повиснуть: ставим на палубу заново.
+            if (_shipTransform != null && TryShipDeckPoint(_shipTransform, _npcTransform.position, out Vector3 deckPoint))
+                _npcTransform.position = new Vector3(_npcTransform.position.x, deckPoint.y + 0.02f, _npcTransform.position.z);
+            Debug.Log("[Dimari] Рост выровнен: герой " + heroHeight.ToString("F2") + " м, капитан был "
+                + captainHeight.ToString("F2") + " м (ширина " + captainWidth.ToString("F2")
+                + "), масштаб капитана ×" + ratio.ToString("F2") + ".", this);
+        }
+
         /// <summary>Открытая точка палубы в радиусе вокруг капитана: там встаёт герой.</summary>
         private bool TryOpenDeckSpotNear(Transform ship, Vector3 anchorWorld, float radius, out Vector3 spot)
         {
@@ -1448,6 +1488,10 @@ namespace Dimari.Story
                     if (!TryShipDeckPoint(ship, candidate, out Vector3 deckPoint)) continue;
                     float clearance = HeadroomAbove(deckPoint + Vector3.up * 0.25f, 3.5f);
                     if (clearance < 2.0f) continue;
+                    // Не вставать на подиум штурвала и не перекрывать его.
+                    if (_captainWheel != null && Vector3.Distance(
+                        Vector3.ProjectOnPlane(deckPoint, Vector3.up),
+                        Vector3.ProjectOnPlane(_captainWheel.position, Vector3.up)) < 1.5f) continue;
                     float score = Mathf.Min(clearance, 3.5f) * 2f - Vector3.Distance(deckPoint, anchorWorld);
                     if (score <= bestScore) continue;
                     bestScore = score;
@@ -1663,10 +1707,9 @@ namespace Dimari.Story
                 if (aft.sqrMagnitude < 0.01f) aft = Vector3.back;
                 aft.Normalize();
 
-                if (TryWheelDeckPoint(ship, wheelWorld, out Vector3 deckPoint))
+                if (FindHelmStandSpot(ship, wheelWorld, out Vector3 stand, out float standHeadroom)
+                    || TryWheelDeckPoint(ship, wheelWorld, out stand))
                 {
-                    Vector3 stand = deckPoint + aft * 0.75f;
-                    if (!HasDeckAt(ship, stand)) stand = deckPoint;
                     stand.y += 0.02f;
 
                     captain.position = stand;
@@ -1675,11 +1718,13 @@ namespace Dimari.Story
                         ? Quaternion.LookRotation(face.normalized, Vector3.up)
                         : ship.rotation * Quaternion.Euler(captainFacingEuler);
 
-                    RememberDeckFromWheel(ship, deckPoint);
+                    RememberDeckFromWheel(ship, stand);
                     float headroom = HeadroomAbove(stand + Vector3.up * 0.2f, 3f);
+                    float wheelDistance = Vector3.Distance(
+                        Vector3.ProjectOnPlane(stand, Vector3.up), Vector3.ProjectOnPlane(wheelWorld, Vector3.up));
                     Debug.Log("[Dimari] Капитан поставлен к штурвалу «" + _captainWheel.name + "»: мир "
-                        + stand.ToString("F2") + ", палуба " + deckPoint.y.ToString("F2")
-                        + ", запас над головой " + headroom.ToString("F1")
+                        + stand.ToString("F2") + ", расстояние до штурвала " + wheelDistance.ToString("F2")
+                        + " м, запас над головой " + headroom.ToString("F1")
                         + " м. Расчётная точка " + fitted.ToString("F2") + " не используется.", this);
                     return;
                 }
@@ -1740,6 +1785,40 @@ namespace Dimari.Story
                 if (hit.point.y > best) { best = hit.point.y; deckPoint = hit.point; }
             }
             return best > float.NegativeInfinity;
+        }
+
+        /// <summary>
+        /// Место рулевого: у штурвала, ближе к диаметральной плоскости, а не сбоку у борта.
+        /// Перебирается кольцо вокруг штурвала; лучший вариант — с палубой, запасом над головой
+        /// и минимальным отклонением «внутрь и назад».
+        /// </summary>
+        private bool FindHelmStandSpot(Transform ship, Vector3 wheelWorld, out Vector3 stand, out float headroom)
+        {
+            stand = wheelWorld;
+            headroom = 0f;
+            bool found = false;
+            float bestScore = float.MinValue;
+            for (int i = 0; i < 12; i++)
+            {
+                float angle = i * 30f;
+                Vector3 direction = Quaternion.Euler(0f, angle, 0f) * ship.forward;
+                Vector3 candidate = wheelWorld + Vector3.ProjectOnPlane(direction, Vector3.up).normalized * 0.85f;
+                if (!TryShipDeckPoint(ship, candidate, out Vector3 deckPoint)) continue;
+                float clearance = HeadroomAbove(deckPoint + Vector3.up * 0.25f, 3.5f);
+                if (clearance < 1.95f) continue;
+                Vector3 local = ship.InverseTransformPoint(deckPoint);
+                // Хотим: не дальше от штурвала, ближе к центру корабля и чуть позади штурвала.
+                float inboard = -Mathf.Abs(local.x) * 2.5f;
+                float aft = -Vector3.Dot(Vector3.ProjectOnPlane(candidate - wheelWorld, Vector3.up).normalized,
+                    Vector3.ProjectOnPlane(ship.forward, Vector3.up).normalized) * 1.5f;
+                float score = Mathf.Min(clearance, 3.5f) + inboard + aft;
+                if (score <= bestScore) continue;
+                bestScore = score;
+                stand = deckPoint;
+                headroom = clearance;
+                found = true;
+            }
+            return found;
         }
 
         /// <summary>Часть самого штурвала (колесо, стойка, стойки крепления).</summary>
@@ -3711,6 +3790,7 @@ namespace Dimari.Story
             if (controller != null) controller.enabled = true;
             _player.IsControlEnabled = true;
             if (_cameraController != null) _cameraController.BeginGameplayTransitionFromCutscene();
+            AlignCrewHeight();
             _waitingForCaptainInteraction = true;
             QuestStep captainQuest = new QuestStep { id = "talk_captain", title = "Поговорить с капитаном [E]." };
             questSteps.Add(captainQuest);
@@ -3741,6 +3821,8 @@ namespace Dimari.Story
             if (pirateCaptainAnswer == null)
                 pirateCaptainAnswer = Resources.Load<AudioClip>("Voice_Pirate_CaptainAnswer");
             _captainConversationActive = true;
+            Debug.Log("[Dimari] Разговор на палубе: герой " + RendererHeight(_player.gameObject, out _).ToString("F2")
+                + " м, капитан " + RendererHeight(_npcTransform.gameObject, out _).ToString("F2") + " м.", this);
             const string question = "Товарищ, где я? Я не помню, как я тут оказался. Подскажите, где я?";
             const string answer = "Слышь, сухопутная крыса, ты на необитаемом острове! И скажу я тебе по-честному: повезло тебе, что старый морской волк бросил тут свой якорь. Прыгай на борт — и мы с тобой доплывём до города, чтоб меня черти драли!";
             yield return CaptainDialogueLine("Герой: " + question, heroCaptainQuestion, 7f, false, meetingLocal);
@@ -4312,6 +4394,15 @@ namespace Dimari.Story
                 if (_isMenuOpen) { yield return null; continue; }
                 elapsed += Time.unscaledDeltaTime;
                 _player.StopLocomotionAnimation();
+                // Герой стоит на палубе: без этого Animator держит позу прыжка/приседания.
+                if (_characterAnimator != null)
+                {
+                    _characterAnimator.SetFloat("Speed", 0f);
+                    _characterAnimator.SetFloat("MotionSpeed", 1f);
+                    _characterAnimator.SetBool("Grounded", true);
+                    _characterAnimator.SetBool("Jump", false);
+                    _characterAnimator.SetBool("FreeFall", false);
+                }
                 _player.transform.position = _shipTransform.TransformPoint(heroLocalPosition);
                 Vector3 toCaptain = Vector3.ProjectOnPlane(_npcTransform.position - _player.transform.position, _shipTransform.up);
                 if (toCaptain.sqrMagnitude > 0.001f)
@@ -4395,19 +4486,18 @@ namespace Dimari.Story
             // Высота глаз над палубой, а не над водой: капитан и герой стоят на одной палубе.
             float eye = Mathf.Max(heroLocal.y, captainLocal.y) + 1.62f;
 
-            Vector3 extents = _measuredShipLocalBounds.extents;
-            float maxX = Mathf.Max(1.4f, extents.x * 0.55f);
-            float maxZ = Mathf.Max(1.4f, extents.z * 0.55f);
+            // Оба должны быть на сопоставимом удалении: камера не липнет к одному из них.
+            // Дистанция растёт вместе с расстоянием между героем и капитаном.
+            float separation = Vector3.Distance(heroHead, captainHead);
+            float targetDistance = Mathf.Clamp(separation * 1.35f + 2.2f, 3.0f, 6.5f);
 
             float bestScore = float.MinValue;
             bool found = false;
-            foreach (float lateral in new[] { 1.7f, 2.1f, 1.4f, 2.5f })
-                foreach (float back in new[] { 0f, 0.7f, -0.7f })
+            foreach (float lateral in new[] { 2.6f, 3.0f, 3.5f, 4.0f, 4.6f, 2.2f })
+                foreach (float back in new[] { 0f, 0.8f, -0.8f, 1.6f })
                     foreach (float sign in new[] { 1f, -1f })
                     {
                         Vector3 local = mid + side * lateral * sign + axis * back;
-                        local.x = Mathf.Clamp(local.x, -maxX, maxX);
-                        local.z = Mathf.Clamp(local.z, -maxZ, maxZ);
                         local.y = eye;
                         Vector3 point = _shipTransform.TransformPoint(local);
 
@@ -4419,9 +4509,13 @@ namespace Dimari.Story
                         Vector3 toHero = (heroHead - point).normalized;
                         Vector3 toCaptain = (captainHead - point).normalized;
                         float spread = Vector3.Angle(toHero, toCaptain);
-                        if (spread > 90f) continue;
+                        if (spread > 70f) continue;
                         float distance = Vector3.Distance(point, look);
-                        float score = -Mathf.Abs(distance - 2.2f) * 2.2f - spread * 0.02f;
+                        float ratio = Mathf.Max(Vector3.Distance(point, heroHead), Vector3.Distance(point, captainHead))
+                            / Mathf.Max(0.1f, Mathf.Min(Vector3.Distance(point, heroHead), Vector3.Distance(point, captainHead)));
+                        // Штраф за «один вплотную, другой далеко» и за дистанцию не по размеру сцены.
+                        float score = -Mathf.Abs(distance - targetDistance) * 2.5f
+                            - spread * 0.05f - Mathf.Max(0f, ratio - 1.6f) * 6f;
                         if (score <= bestScore) continue;
                         bestScore = score;
                         camera = point;
