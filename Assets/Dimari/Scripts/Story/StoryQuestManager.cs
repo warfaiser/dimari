@@ -557,9 +557,11 @@ namespace Dimari.Story
             SetMatColor(darkWoodMat, new Color(0.24f, 0.15f, 0.09f, 1f));
 
             Material waterMat = new Material(litShader);
-            SetMatColor(waterMat, new Color(0.08f, 0.32f, 0.42f, 0.94f));
-            if (waterMat.HasProperty("_Smoothness")) waterMat.SetFloat("_Smoothness", 0.92f);
-            if (waterMat.HasProperty("_Metallic")) waterMat.SetFloat("_Metallic", 0.15f);
+            // Спокойная вода: без зеркального блеска и без «пластика».
+            SetMatColor(waterMat, new Color(0.05f, 0.27f, 0.38f, 1f));
+            if (waterMat.HasProperty("_Smoothness")) waterMat.SetFloat("_Smoothness", 0.55f);
+            if (waterMat.HasProperty("_Metallic")) waterMat.SetFloat("_Metallic", 0f);
+            if (waterMat.HasProperty("_SpecularHighlights")) waterMat.SetFloat("_SpecularHighlights", 0.35f);
 
             // Точка начала и конца прохода героя в кат-сцене
             GameObject startPt = new GameObject("CutsceneWalkStart");
@@ -823,29 +825,56 @@ namespace Dimari.Story
             // 2. Вода вдоль всего маршрута: и у причала, и там, где корабль плывёт.
             CreateVoyageWater(root, waterMat, drop);
 
-            // 3. Лестница вниз по скале: каждая ступень проходима (BoxCollider).
+            // 3. Лестница вниз по скале. Ступени ставятся НЕ внутри камня: для каждой высоты
+            //    находится внешняя грань скалы (луч со стороны моря), и ступень выносится на
+            //    0.55 м наружу. Поэтому спуск идёт по открытому воздуху вдоль обрыва.
             int steps = Mathf.Clamp(Mathf.CeilToInt(drop / 0.26f), 6, 64);
             float rise = drop / steps;
             float run = 0.38f;
             float width = 2.6f;
-            float firstStepZ = 0.9f;
             GameObject stairs = new GameObject("CliffDescentStairs");
             stairs.transform.SetParent(root, false);
+            Physics.SyncTransforms();
+
+            var stepPositions = new List<Vector3>();
+            float previousZ = 0.4f;
             for (int i = 0; i < steps; i++)
             {
+                float yLocal = -rise * (i + 1);
+                float faceZ = FindCliffFaceZ(root, yLocal);
+                float stepZ = faceZ > float.NegativeInfinity ? faceZ + 0.55f : previousZ + run;
+                // Спуск всегда идёт вперёд: ступени не заходят друг под друга.
+                stepZ = Mathf.Max(stepZ, previousZ + run * 0.8f);
+                previousZ = stepZ;
+                stepPositions.Add(new Vector3(0f, yLocal - 0.11f, stepZ));
+
                 GameObject step = CreatePart(PrimitiveType.Cube, "CliffStep_" + i, stairs.transform,
-                    new Vector3(0f, -rise * (i + 1) - 0.11f, firstStepZ + run * (i + 0.5f)),
-                    Quaternion.identity, new Vector3(width, 0.22f, run + 0.05f),
+                    stepPositions[i], Quaternion.identity, new Vector3(width, 0.22f, run + 0.35f),
                     i % 2 == 0 ? woodMat : darkWoodMat);
                 step.AddComponent<BoxCollider>();
-                if (i % 4 == 0 && i > 0)
+                if (i % 4 == 0)
                 {
-                    CreatePart(PrimitiveType.Cylinder, "CliffRailing_" + i, stairs.transform,
-                        new Vector3(width * 0.5f, -rise * i + 0.35f, firstStepZ + run * i),
-                        Quaternion.identity, new Vector3(0.09f, 0.45f, 0.09f), darkWoodMat);
+                    // Стойки и поручень с внешней стороны: видно, что это настил, а не дыра в скале.
+                    CreatePart(PrimitiveType.Cylinder, "CliffPostL_" + i, stairs.transform,
+                        new Vector3(-width * 0.5f, yLocal + 0.35f, stepZ), Quaternion.identity,
+                        new Vector3(0.09f, 0.45f, 0.09f), darkWoodMat);
+                    CreatePart(PrimitiveType.Cylinder, "CliffPostR_" + i, stairs.transform,
+                        new Vector3(width * 0.5f, yLocal + 0.35f, stepZ), Quaternion.identity,
+                        new Vector3(0.09f, 0.45f, 0.09f), darkWoodMat);
+                    CreatePart(PrimitiveType.Cube, "CliffRailR_" + i, stairs.transform,
+                        new Vector3(width * 0.5f, yLocal + 0.78f, stepZ), Quaternion.identity,
+                        new Vector3(0.07f, 0.07f, run * 4f + 0.3f), darkWoodMat);
                 }
             }
-            float stairEndZ = firstStepZ + run * steps;
+            float lastStepZ = previousZ;
+            // Верхняя площадка: соединяет край обрыва с первой ступенью.
+            float topPlatformZ = Mathf.Max(0.2f, stepPositions[0].z - run);
+            GameObject topPlatform = CreatePart(PrimitiveType.Cube, "CliffTopPlatform", root,
+                new Vector3(0f, -0.05f, topPlatformZ), Quaternion.identity,
+                new Vector3(width, 0.22f, 1.8f), woodMat);
+            topPlatform.AddComponent<BoxCollider>();
+
+            float stairEndZ = lastStepZ + run * 0.5f;
             float landingZ = stairEndZ + 1.6f;
 
             // 3. Нижний причал на воде.
@@ -890,9 +919,10 @@ namespace Dimari.Story
             Vector3 topStart = root.TransformPoint(new Vector3(0f, 0f, -4.5f));
             topStart.y = GetGroundPoint(topStart, topStart.y).y + 0.05f;
             _descentPath.Add(topStart);
-            _descentPath.Add(root.TransformPoint(new Vector3(0f, 0.05f, 0.35f)));
-            for (int i = 1; i <= steps; i += 2)
-                _descentPath.Add(root.TransformPoint(new Vector3(0f, -rise * i + 0.12f, firstStepZ + run * (i - 0.5f))));
+            _descentPath.Add(root.TransformPoint(new Vector3(0f, 0.05f, topPlatformZ)));
+            _descentPath.Add(root.TransformPoint(new Vector3(0f, 0.02f, stepPositions[0].z)));
+            for (int i = 0; i < stepPositions.Count; i += 2)
+                _descentPath.Add(root.TransformPoint(new Vector3(0f, stepPositions[i].y + 0.13f, stepPositions[i].z)));
             _descentPath.Add(root.TransformPoint(new Vector3(0f, -drop + 0.2f, landingZ + 1.2f)));
             _descentPath.Add(root.TransformPoint(new Vector3(0f, -drop + 0.2f, walkwayEnd)));
 
@@ -928,9 +958,11 @@ namespace Dimari.Story
         {
             float ship = Mathf.Max(8.5f, shipModelSize);
             float width = Mathf.Clamp(ship * 2.4f, 45f, 220f);
-            float behind = ship * 1.3f;
+            // Вода начинается у самой скалы, иначе от обрыва виден ровный передний край.
+            float behind = Mathf.Max(ship * 1.3f, _cliffShipDistance * 0.95f);
             float step = 4f;
-            float maxAhead = Mathf.Clamp(sailingDistance + ship * 2f, 60f, 600f);
+            // Вода уходит далеко за горизонт: тогда её дальний край не виден как ровная линия.
+            float maxAhead = Mathf.Max(420f, Mathf.Clamp(sailingDistance + ship * 2f, 60f, 600f));
 
             // Сколько воды впереди: идём от корабля и останавливаемся на первой суше.
             Vector3 localForward = Vector3.ProjectOnPlane(root.forward, Vector3.up).normalized;
@@ -965,15 +997,18 @@ namespace Dimari.Story
             float cellZ = length / rows;
 
             bool[,] keep = new bool[columns, rows];
-            float footprint = Mathf.Max(10f, ship * 0.75f);
+            // Вода гарантированно есть только под корпусом (не шире его), иначе она заливала бы скалы рядом.
+            float hullHalfLength = Mathf.Max(6f, ship * 0.42f);
+            float hullHalfWidth = Mathf.Max(4f, ship * 0.30f);
             for (int x = 0; x < columns; x++)
                 for (int z = 0; z < rows; z++)
                 {
+                    float localX = -width * 0.5f + (x + 0.5f) * cellX;
                     float localZ = startZ + (z + 0.5f) * cellZ;
-                    Vector3 world = root.TransformPoint(new Vector3(
-                        -width * 0.5f + (x + 0.5f) * cellX, -drop, localZ));
-                    // Под самим кораблём вода есть всегда: иначе он «висит» над вырезанной ячейкой.
-                    if (Mathf.Abs(localZ - _cliffShipDistance) <= footprint) { keep[x, z] = true; continue; }
+                    bool underHull = Mathf.Abs(localZ - _cliffShipDistance) <= hullHalfLength
+                        && Mathf.Abs(localX) <= hullHalfWidth;
+                    if (underHull) { keep[x, z] = true; continue; }
+                    Vector3 world = root.TransformPoint(new Vector3(localX, -drop, localZ));
                     keep[x, z] = !TerrainAboveWater(world, _cutsceneWaterLevel - 0.25f);
                 }
 
@@ -1019,10 +1054,37 @@ namespace Dimari.Story
             GameObject water = new GameObject("Dimari_VoyageWater");
             water.transform.SetParent(root, false);
             water.AddComponent<MeshFilter>().sharedMesh = mesh;
-            water.AddComponent<MeshRenderer>().sharedMaterial = waterMat;
+            MeshRenderer waterRenderer = water.AddComponent<MeshRenderer>();
+            waterRenderer.sharedMaterial = waterMat;
+            // Тёмные рваные пятна на воде — это была тень корабля. Вода её больше не принимает.
+            waterRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            waterRenderer.receiveShadows = false;
             Debug.Log("[Dimari] Вода маршрута: " + (vertices.Count / 4) + " ячеек, ширина "
                 + width.ToString("F0") + " м, свободно впереди " + _voyageWaterLength.ToString("F0")
                 + " м, вырезано над сушей " + (columns * rows - vertices.Count / 4) + ".", water);
+        }
+
+        /// <summary>
+        /// Внешняя грань скалы на заданной высоте (в локальных Z корня сцены обрыва).
+        /// Луч идёт со стороны моря назад, поэтому первая же скала — это и есть обрыв.
+        /// Возвращает float.NegativeInfinity, если на этой высоте камня нет.
+        /// </summary>
+        private float FindCliffFaceZ(Transform root, float localY)
+        {
+            Vector3 from = root.TransformPoint(new Vector3(0f, localY + 0.05f, 70f));
+            Vector3 to = root.TransformPoint(new Vector3(0f, localY + 0.05f, -6f));
+            Vector3 direction = (to - from).normalized;
+            float maxDistance = Vector3.Distance(from, to);
+            var hits = Physics.RaycastAll(from, direction, maxDistance, ~0, QueryTriggerInteraction.Ignore);
+            System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+            foreach (RaycastHit hit in hits)
+            {
+                if (hit.transform.IsChildOf(root)) continue;
+                if (_player != null && hit.transform.IsChildOf(_player.transform)) continue;
+                if (_shipTransform != null && hit.transform.IsChildOf(_shipTransform)) continue;
+                return root.InverseTransformPoint(hit.point).z;
+            }
+            return float.NegativeInfinity;
         }
 
         /// <summary>Есть ли над точкой суша выше уровня воды.</summary>
@@ -1400,12 +1462,15 @@ namespace Dimari.Story
         {
             point = near;
             float best = float.NegativeInfinity;
-            foreach (RaycastHit hit in Physics.RaycastAll(near + Vector3.up * 3f, Vector3.down, 12f, ~0, QueryTriggerInteraction.Ignore))
+            foreach (RaycastHit hit in Physics.RaycastAll(near + Vector3.up * 3f, Vector3.down, 14f, ~0, QueryTriggerInteraction.Ignore))
             {
                 if (!hit.transform.IsChildOf(ship)) continue;
                 if (hit.normal.y < 0.55f) continue;
                 if (IsRigging(hit.transform)) continue;
-                if (hit.point.y > near.y + 2.5f) continue;
+                // Штурвал и его стойка — не палуба.
+                if (IsHelmPart(hit.transform)) continue;
+                // Поручень или крыша над точкой не должны становиться «полом».
+                if (hit.point.y > near.y + 0.6f) continue;
                 if (hit.point.y > best) { best = hit.point.y; point = hit.point; }
             }
             return best > float.NegativeInfinity;
@@ -1583,132 +1648,143 @@ namespace Dimari.Story
 
         private void PositionCaptainAtHelm(Transform captain, Transform ship)
         {
-            // A real helm always wins over the fitted placeholder: the placeholder was measured
-            // on the Sky Protective Suit / pirate-ship pair and lands inside other models.
-            if (_captainWheel != null && _shipDeckMeasured)
+            float fittedScale = Mathf.Max(8.5f, shipModelSize) / 8.5f;
+            Vector3 fitted = fittedCaptainPosition * fittedScale;
+            captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
+
+            // 1. Штурвал главнее любой расчётной точки: капитан обязан стоять у него.
+            if (_captainWheel != null)
             {
-                Vector3 wheelLocal = ship.InverseTransformPoint(_captainWheel.position);
-                Renderer wheelRenderer = _captainWheel.GetComponentInChildren<Renderer>();
-                if (wheelRenderer != null) wheelLocal = ship.InverseTransformPoint(wheelRenderer.bounds.center);
-                Vector3 fitted = fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f);
-                bool fittedIsFarFromWheel = (ship.TransformPoint(fitted) - _captainWheel.position).sqrMagnitude > 6.25f;
-                // The wheel is a world-space anchor: measure the actual deck under it by raycast
-                // instead of trusting local deck maths on a model with its own scaling.
                 Vector3 wheelWorld = _captainWheel.position;
-                Renderer helmRenderer = _captainWheel.GetComponentInChildren<Renderer>();
-                if (helmRenderer != null) wheelWorld = helmRenderer.bounds.center;
-                if (TryStandingSpotAtWheel(ship, wheelWorld, out Vector3 stand, out float helmHeadroom))
+                Renderer wheelRenderer = _captainWheel.GetComponentInChildren<Renderer>();
+                if (wheelRenderer != null) wheelWorld = wheelRenderer.bounds.center;
+
+                Vector3 aft = Vector3.ProjectOnPlane(-ship.forward, Vector3.up);
+                if (aft.sqrMagnitude < 0.01f) aft = Vector3.back;
+                aft.Normalize();
+
+                if (TryWheelDeckPoint(ship, wheelWorld, out Vector3 deckPoint))
                 {
-                    // Палуба у штурвала — это и есть та палуба, на которую встаёт герой.
-                    float helmDeckLocal = ship.InverseTransformPoint(stand).y;
-                    if (!_shipDeckMeasured || Mathf.Abs(helmDeckLocal - _measuredDeckLocalY) > 0.2f)
-                    {
-                        _measuredDeckLocalY = helmDeckLocal;
-                        _shipDeckMeasured = true;
-                        _boardingDeckLocal = new Vector3(
-                            Mathf.Clamp(_boardingDeckLocal.x, -_measuredShipLocalBounds.extents.x * 0.3f, _measuredShipLocalBounds.extents.x * 0.3f),
-                            helmDeckLocal + 0.06f,
-                            Mathf.Clamp(_boardingDeckLocal.z, -_measuredShipLocalBounds.extents.z * 0.3f, _measuredShipLocalBounds.extents.z * 0.3f));
-                        Debug.Log("[Dimari] Палуба уточнена по штурвалу: " + helmDeckLocal.ToString("F2") + " м (локально).", this);
-                    }
+                    Vector3 stand = deckPoint + aft * 0.75f;
+                    if (!HasDeckAt(ship, stand)) stand = deckPoint;
+                    stand.y += 0.02f;
+
                     captain.position = stand;
                     Vector3 face = Vector3.ProjectOnPlane(wheelWorld - stand, Vector3.up);
                     captain.rotation = face.sqrMagnitude > 0.01f
                         ? Quaternion.LookRotation(face.normalized, Vector3.up)
                         : ship.rotation * Quaternion.Euler(captainFacingEuler);
-                    captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
+
+                    RememberDeckFromWheel(ship, deckPoint);
+                    float headroom = HeadroomAbove(stand + Vector3.up * 0.2f, 3f);
                     Debug.Log("[Dimari] Капитан поставлен к штурвалу «" + _captainWheel.name + "»: мир "
-                        + stand.ToString("F2") + " (штурвал " + wheelWorld.ToString("F2")
-                        + ", запас над головой " + helmHeadroom.ToString("F1") + " м), прежняя расчётная точка "
-                        + fitted.ToString("F2") + " не используется.", this);
+                        + stand.ToString("F2") + ", палуба " + deckPoint.y.ToString("F2")
+                        + ", запас над головой " + headroom.ToString("F1")
+                        + " м. Расчётная точка " + fitted.ToString("F2") + " не используется.", this);
                     return;
                 }
-                if (!useFittedCaptainPlacement || fittedIsFarFromWheel)
-                {
-                    // Stand just aft of the wheel, where a helmsman stands.
-                    Vector3 aft = wheelLocal + ship.InverseTransformDirection(-ship.forward) * 0.45f;
-                    if (Mathf.Abs(DeckLocalYAt(aft) - DeckLocalYAt(wheelLocal)) > 0.6f) aft = wheelLocal;
-                    aft.y = DeckLocalYAt(aft) + 0.02f;
-                    aft = FindOpenDeckPoint(ship, aft);
-                    captain.localPosition = aft;
-                    captain.localRotation = Quaternion.Euler(captainFacingEuler);
-                    captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
-                    Debug.Log("[Dimari] Капитан поставлен к штурвалу: локально " + aft.ToString("F2")
-                        + " (прежняя расчётная точка " + fitted.ToString("F2") + " отклонена).", this);
-                    return;
-                }
-            }
-            if (useFittedCaptainPlacement)
-            {
-                captain.localPosition = fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f);
-                captain.localRotation = Quaternion.Euler(captainFacingEuler);
-                captain.localScale = Vector3.one * (humanSizedCaptain ? 1f : Mathf.Max(0.01f, fittedCaptainScale));
-                if (autoFitCrewToMeasuredDeck && _shipDeckMeasured)
-                {
-                    Vector3 fitted = captain.localPosition;
-                    float halfX = _measuredShipLocalBounds.extents.x, halfZ = _measuredShipLocalBounds.extents.z;
-                    if (halfX > 0.02f) fitted.x = Mathf.Clamp(fitted.x, -halfX * 0.55f, halfX * 0.55f);
-                    if (halfZ > 0.02f) fitted.z = Mathf.Clamp(fitted.z, -halfZ * 0.55f, halfZ * 0.55f);
-                    float deck = DeckLocalYAt(fitted);
-                    bool wrongHeight = Mathf.Abs(fitted.y - deck) > 0.35f;
-                    bool outsideHull = Mathf.Abs(fitted.x) > halfX || Mathf.Abs(fitted.z) > halfZ;
-                    if (wrongHeight || outsideHull)
-                    {
-                        fitted.y = deck + 0.02f;
-                        fitted = FindOpenDeckPoint(ship, fitted);
-                        captain.localPosition = fitted;
-                        if (!_shipGeometryReported)
-                        {
-                            _shipGeometryReported = true;
-                            Debug.LogWarning("[Dimari] Капитан переставлен на измеренную палубу: было "
-                                + (fittedCaptainPosition * (Mathf.Max(8.5f, shipModelSize) / 8.5f)).ToString("F2")
-                                + ", стало " + fitted.ToString("F2") + " | размеры корабля " + _measuredShipLocalBounds.size.ToString("F1")
-                                + ". Причина — расчётная высота не совпала с реальной моделью корабля.", this);
-                        }
-                    }
-                    else if (!_shipGeometryReported)
-                    {
-                        _shipGeometryReported = true;
-                        Debug.Log("[Dimari] Капитан на палубе: высота " + fitted.y.ToString("F2") + " при палубе " + deck.ToString("F2")
-                            + " | размеры корабля " + _measuredShipLocalBounds.size.ToString("F1"), this);
-                    }
-                }
-                return;
-            }
-            captain.localScale = Vector3.one;
-            Transform model = ship.Find("AssetStore_Ship_Model");
-            Transform anchor = null;
-            if (model != null && !string.IsNullOrWhiteSpace(captainHelmAnchorPath))
-                anchor = model.Find(captainHelmAnchorPath);
-            if (anchor == null)
-            {
-                foreach (Transform part in ship.GetComponentsInChildren<Transform>(true))
-                    if (part.name == "CaptainHelmAnchor") { anchor = part; break; }
-            }
-            if (anchor != null)
-            {
-                captain.position = anchor.position;
-                captain.rotation = anchor.rotation;
+
+                // 2. Палубу лучом найти не удалось: ставим на измеренную палубу у штурвала.
+                Vector3 fallback = ship.TransformPoint(new Vector3(
+                    ship.InverseTransformPoint(wheelWorld).x,
+                    _shipDeckMeasured ? _measuredDeckLocalY : ship.InverseTransformPoint(wheelWorld).y - 1.5f,
+                    ship.InverseTransformPoint(wheelWorld).z)) + aft * 0.75f;
+                captain.position = fallback;
+                Vector3 faceFallback = Vector3.ProjectOnPlane(wheelWorld - fallback, Vector3.up);
+                captain.rotation = faceFallback.sqrMagnitude > 0.01f
+                    ? Quaternion.LookRotation(faceFallback.normalized, Vector3.up)
+                    : ship.rotation * Quaternion.Euler(captainFacingEuler);
+                Debug.LogWarning("[Dimari] Палуба под штурвалом не найдена лучом. Капитан поставлен у штурвала "
+                    + "на измеренную палубу: " + fallback.ToString("F2") + ".", this);
                 return;
             }
 
-            Transform wheel = null;
-            foreach (Transform part in ship.GetComponentsInChildren<Transform>(true))
+            // 3. Штурвала в модели нет — только тогда используется расчётная точка.
+            if (useFittedCaptainPlacement)
             {
-                string name = part.name.ToLowerInvariant().Replace("_", "").Replace(" ", "");
-                if (name.Contains("shipwheel") || name.Contains("steeringwheel") ||
-                    name.Contains("helm") || name == "wheel" || name.Contains("штурвал"))
-                { wheel = part; break; }
+                captain.localPosition = fitted;
+                captain.localRotation = Quaternion.Euler(captainFacingEuler);
+                if (autoFitCrewToMeasuredDeck && _shipDeckMeasured)
+                {
+                    Vector3 local = captain.localPosition;
+                    float halfX = _measuredShipLocalBounds.extents.x, halfZ = _measuredShipLocalBounds.extents.z;
+                    if (halfX > 0.02f) local.x = Mathf.Clamp(local.x, -halfX * 0.55f, halfX * 0.55f);
+                    if (halfZ > 0.02f) local.z = Mathf.Clamp(local.z, -halfZ * 0.55f, halfZ * 0.55f);
+                    float deck = DeckLocalYAt(local);
+                    if (Mathf.Abs(local.y - deck) > 0.35f) local.y = deck + 0.02f;
+                    captain.localPosition = local;
+                }
+                Debug.Log("[Dimari] Штурвал не найден: капитан стоит по расчётной точке " + fitted.ToString("F2")
+                    + ". Добавьте объект с именем Wheel/Helm в префаб корабля.", this);
+                return;
             }
-            captain.localPosition = wheel != null
-                ? ship.InverseTransformPoint(wheel.position) + captainOffsetFromWheel
-                : captainFallbackPosition;
+            captain.localPosition = captainFallbackPosition;
             captain.localRotation = Quaternion.Euler(captainFacingEuler);
-            if (wheel == null)
-                Debug.LogWarning("[Dimari] Штурвал не выделен в модели: подстройте Captain Fallback Position или добавьте CaptainHelmAnchor на палубу за штурвалом.");
+        }
+
+        /// <summary>Палуба под штурвалом: самая высокая горизонтальная поверхность корабля ниже штурвала.</summary>
+        private bool TryWheelDeckPoint(Transform ship, Vector3 wheelWorld, out Vector3 deckPoint)
+        {
+            deckPoint = wheelWorld;
+            float best = float.NegativeInfinity;
+            var hits = Physics.RaycastAll(wheelWorld + Vector3.up * 1.5f, Vector3.down, 16f,
+                ~0, QueryTriggerInteraction.Ignore);
+            System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+            foreach (RaycastHit hit in hits)
+            {
+                if (!hit.transform.IsChildOf(ship)) continue;
+                if (IsHelmPart(hit.transform)) continue;
+                if (IsRigging(hit.transform)) continue;
+                if (hit.normal.y < 0.5f) continue;
+                if (hit.point.y > wheelWorld.y + 0.1f) continue;
+                if (hit.point.y > best) { best = hit.point.y; deckPoint = hit.point; }
+            }
+            return best > float.NegativeInfinity;
+        }
+
+        /// <summary>Часть самого штурвала (колесо, стойка, стойки крепления).</summary>
+        private bool IsHelmPart(Transform part)
+        {
+            for (Transform t = part; t != null; t = t.parent)
+            {
+                string name = t.name.ToLowerInvariant().Replace("_", "").Replace(" ", "");
+                if (name.Contains("wheel") || name.Contains("helm") || name.Contains("steering") || name.Contains("штурвал"))
+                    return true;
+                if (_captainWheel != null && t == _captainWheel) return true;
+            }
+            return false;
+        }
+
+        /// <summary>Есть ли под точкой палуба корабля (чтобы капитан не оказался в воздухе).</summary>
+        private bool HasDeckAt(Transform ship, Vector3 point)
+        {
+            foreach (RaycastHit hit in Physics.RaycastAll(point + Vector3.up * 0.3f, Vector3.down, 1.6f,
+                ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (!hit.transform.IsChildOf(ship)) continue;
+                if (IsHelmPart(hit.transform) || IsRigging(hit.transform)) continue;
+                if (hit.normal.y < 0.5f) continue;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>Палуба у штурвала становится общей палубой для капитана и героя.</summary>
+        private void RememberDeckFromWheel(Transform ship, Vector3 deckPoint)
+        {
+            float localY = ship.InverseTransformPoint(deckPoint).y;
+            if (_shipDeckMeasured && Mathf.Abs(localY - _measuredDeckLocalY) <= 0.2f) return;
+            _measuredDeckLocalY = localY;
+            _shipDeckMeasured = true;
+            _boardingDeckLocal = new Vector3(
+                Mathf.Clamp(_boardingDeckLocal.x, -_measuredShipLocalBounds.extents.x * 0.3f, _measuredShipLocalBounds.extents.x * 0.3f),
+                localY + 0.06f,
+                Mathf.Clamp(_boardingDeckLocal.z, -_measuredShipLocalBounds.extents.z * 0.3f, _measuredShipLocalBounds.extents.z * 0.3f));
+            Debug.Log("[Dimari] Палуба взята по штурвалу: " + localY.ToString("F2") + " м (локально).", this);
         }
 
         /// <summary>
+        /// Автоматически ищет импортированный пользователем 3D-корабль        /// <summary>
         /// Автоматически ищет импортированный пользователем 3D-корабль или лодку из Unity Asset Store
         /// (например: Boats Pack, Stylized Pirate Ship, Sailing Ships, Simple Boats and Tankers).
         /// </summary>
@@ -2081,6 +2157,20 @@ namespace Dimari.Story
                 npcInstance.transform.localScale = Vector3.one;
 
                 NormalizeModelBoundsOnGround(npcInstance.transform, 1.8f);
+                // Страховка от моделей с масштабом 100: капитан всегда человеческого роста.
+                Renderer[] captainRenderers = npcInstance.GetComponentsInChildren<Renderer>(true);
+                if (captainRenderers.Length > 0)
+                {
+                    Bounds captainBounds = captainRenderers[0].bounds;
+                    for (int i = 1; i < captainRenderers.Length; i++) captainBounds.Encapsulate(captainRenderers[i].bounds);
+                    float height = captainBounds.size.y;
+                    if (height > 3f || height < 0.6f)
+                    {
+                        npcInstance.transform.localScale *= 1.8f / Mathf.Max(0.01f, height);
+                        Debug.LogWarning("[Dimari] Модель капитана была " + height.ToString("F1")
+                            + " м ростом и приведена к 1.8 м.", npcInstance);
+                    }
+                }
                 foreach (Rigidbody body in npcInstance.GetComponentsInChildren<Rigidbody>(true))
                 {
                     body.isKinematic = true;
